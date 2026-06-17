@@ -37,6 +37,11 @@ async function startServer() {
   registerStorageProxy(app);
   registerOAuthRoutes(app);
   registerAnalysisRoute(app);
+
+  // Health check endpoint (used by docker-compose and deploy.sh)
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
   // tRPC API
   app.use(
     "/api/trpc",

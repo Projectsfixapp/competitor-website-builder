@@ -25,21 +25,20 @@
 - [x] Projekt löschen mit Bestätigung
 
 ## Tests
-- [x] Vitest-Tests für alle tRPC-Prozeduren (10 Tests, alle grün)
+- [x] Vitest-Tests für alle tRPC-Prozeduren (12 Tests, alle grün)
 - [x] Auth-Logout-Test (bestehend)
 
 ## Modell-Auswahl
-- [ ] DB-Schema: llmProvider-Feld in projects-Tabelle
-- [ ] LLM-Adapter: universeller Wrapper für Manus/Gemini/Claude
-- [ ] Backend: llmProvider in SSE-Pipeline übergeben
-- [ ] Frontend: Modell-Auswahl-UI in NewProject (Radio/Select)
-- [ ] Frontend: gewähltes Modell im Projekt-Detail anzeigen
+- [x] DB-Schema: llmProvider-Feld in projects-Tabelle
+- [x] LLM-Adapter: universeller Wrapper für Manus/Gemini/Claude
+- [x] Backend: llmProvider in SSE-Pipeline übergeben
+- [x] Frontend: Modell-Auswahl-UI in NewProject (Radio/Select)
+- [x] Frontend: gewähltes Modell im Projekt-Detail anzeigen
 
 ## Hetzner-Deployment
-- [ ] Dockerfile (multi-stage, Node 22 Alpine)
-- [ ] docker-compose.yml (App + MySQL)
-- [ ] nginx.conf (Reverse Proxy, HTTPS-ready)
-- [ ] systemd service file
-- [ ] deploy.sh (automatisches Deploy-Script)
-- [ ] .env.production.template
-- [ ] DEPLOY.md (Schritt-für-Schritt-Anleitung)
+- [x] Dockerfile (multi-stage, Node 22 Alpine)
+- [x] docker-compose.yml (App + MySQL)
+- [x] nginx.conf (Reverse Proxy, HTTPS-ready, SSE-optimiert)
+- [x] deploy.sh (automatisches Deploy-Script)
+- [x] .env.production.template
+- [x] DEPLOY.md (Schritt-für-Schritt-Anleitung)

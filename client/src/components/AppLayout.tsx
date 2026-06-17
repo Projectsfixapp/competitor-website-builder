@@ -31,7 +31,7 @@ const navItems: NavItem[] = [
 interface AppLayoutProps {
   children: React.ReactNode;
   title?: string;
-  subtitle?: string;
+  subtitle?: string | React.ReactNode;
   actions?: React.ReactNode;
 }
 
