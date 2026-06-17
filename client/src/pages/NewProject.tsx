@@ -117,7 +117,7 @@ export default function NewProject() {
               </Label>
               <Input
                 id="name"
-                placeholder="z.B. Kerzen-Markt Analyse Q3 2026"
+                placeholder="z.B. Mitbewerber-Analyse Q3 2026"
                 value={projectName}
                 onChange={(e) => setProjectName(e.target.value)}
                 className="bg-background"

@@ -129,13 +129,13 @@ export default function AppLayout({ children, title, subtitle, actions }: AppLay
             Ressourcen
           </p>
           <a
-            href="https://geilstekerze.de"
+            href="#"
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-all duration-150"
           >
             <Globe size={16} />
-            Website
+            Meine Website
             <ExternalLink size={11} className="ml-auto opacity-40" />
           </a>
         </nav>
