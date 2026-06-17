@@ -10,6 +10,7 @@ vi.mock("./db", () => ({
       userId: 1,
       name: "Test Projekt",
       status: "done",
+      llmProvider: "manus",
       errorMessage: null,
       createdAt: new Date("2026-01-01"),
       updatedAt: new Date("2026-01-01"),
@@ -20,6 +21,7 @@ vi.mock("./db", () => ({
     userId: 1,
     name: "Test Projekt",
     status: "done",
+    llmProvider: "manus",
     errorMessage: null,
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
@@ -132,6 +134,28 @@ describe("projects.create", () => {
     });
     expect(result).toHaveProperty("projectId");
     expect(result.projectId).toBe(42);
+  });
+
+  it("erstellt ein Projekt mit Claude-Provider", async () => {
+    const ctx = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.projects.create({
+      name: "Claude Projekt",
+      urls: ["https://example.com"],
+      llmProvider: "claude",
+    });
+    expect(result).toHaveProperty("projectId");
+  });
+
+  it("erstellt ein Projekt mit Gemini-Provider", async () => {
+    const ctx = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.projects.create({
+      name: "Gemini Projekt",
+      urls: ["https://example.com"],
+      llmProvider: "gemini",
+    });
+    expect(result).toHaveProperty("projectId");
   });
 
   it("validiert URL-Format", async () => {

@@ -1,0 +1,63 @@
+version: "3.9"
+
+services:
+  # ─── MySQL Database ──────────────────────────────────────────────────────────
+  db:
+    image: mysql:8.4
+    container_name: competitor_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-competitor_builder}
+      MYSQL_USER: ${MYSQL_USER:-appuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3306:3306"   # Only accessible locally (nginx/app on same host)
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Application ─────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: competitor_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: mysql://${MYSQL_USER:-appuser}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE:-competitor_builder}
+      JWT_SECRET: ${JWT_SECRET}
+      # LLM API Keys (optional – only needed for Gemini/Claude provider)
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Manus OAuth (required for login)
+      VITE_APP_ID: ${VITE_APP_ID}
+      OAUTH_SERVER_URL: ${OAUTH_SERVER_URL:-https://api.manus.im}
+      VITE_OAUTH_PORTAL_URL: ${VITE_OAUTH_PORTAL_URL:-https://manus.im}
+      OWNER_OPEN_ID: ${OWNER_OPEN_ID:-}
+      OWNER_NAME: ${OWNER_NAME:-}
+      # Manus Built-in LLM (required for Manus provider)
+      BUILT_IN_FORGE_API_URL: ${BUILT_IN_FORGE_API_URL:-}
+      BUILT_IN_FORGE_API_KEY: ${BUILT_IN_FORGE_API_KEY:-}
+      VITE_FRONTEND_FORGE_API_KEY: ${VITE_FRONTEND_FORGE_API_KEY:-}
+      VITE_FRONTEND_FORGE_API_URL: ${VITE_FRONTEND_FORGE_API_URL:-}
+    ports:
+      - "127.0.0.1:3000:3000"   # Only accessible via nginx reverse proxy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  mysql_data:
+    driver: local

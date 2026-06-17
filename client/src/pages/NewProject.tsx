@@ -3,15 +3,53 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
-import { Globe, Loader2, Plus, Trash2, X } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Brain, Globe, Plus, Loader2, Sparkles, X, Zap } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+
+type LLMProvider = "manus" | "gemini" | "claude";
+
+const PROVIDERS: {
+  id: LLMProvider;
+  name: string;
+  description: string;
+  badge: string;
+  icon: React.ReactNode;
+  color: string;
+}[] = [
+  {
+    id: "manus",
+    name: "Manus Built-in",
+    description: "Kein eigener API-Key nötig. Nutzt das integrierte Manus-Modell.",
+    badge: "Standard",
+    icon: <Sparkles size={16} />,
+    color: "border-primary/40 bg-primary/5",
+  },
+  {
+    id: "gemini",
+    name: "Google Gemini 2.5 Flash",
+    description: "Schnell & kostengünstig. Benötigt GEMINI_API_KEY in den Einstellungen.",
+    badge: "Günstig",
+    icon: <Zap size={16} />,
+    color: "border-blue-200 bg-blue-50/50",
+  },
+  {
+    id: "claude",
+    name: "Anthropic Claude Sonnet",
+    description: "Bester HTML/Copy-Output. Benötigt ANTHROPIC_API_KEY in den Einstellungen.",
+    badge: "Beste Qualität",
+    icon: <Brain size={16} />,
+    color: "border-orange-200 bg-orange-50/50",
+  },
+];
 
 export default function NewProject() {
   const [, navigate] = useLocation();
   const [projectName, setProjectName] = useState("");
   const [urls, setUrls] = useState<string[]>(["", ""]);
+  const [llmProvider, setLlmProvider] = useState<LLMProvider>("manus");
 
   const createMutation = trpc.projects.create.useMutation({
     onSuccess: ({ projectId }) => {
@@ -57,6 +95,7 @@ export default function NewProject() {
     createMutation.mutate({
       name: projectName.trim(),
       urls: validUrls,
+      llmProvider,
     });
   };
 
@@ -143,7 +182,6 @@ export default function NewProject() {
               </Button>
             )}
 
-            {/* URL Summary */}
             <div className="flex items-center gap-2 pt-2 border-t border-border/40">
               <span className="text-xs text-muted-foreground">
                 {validUrls.length} von {urls.length} URLs gültig
@@ -161,12 +199,96 @@ export default function NewProject() {
             </div>
           </div>
 
+          {/* LLM Provider Selection */}
+          <div className="card-premium p-6 space-y-4">
+            <div>
+              <h2 className="font-serif text-lg font-semibold mb-1">KI-Modell auswählen</h2>
+              <p className="text-sm text-muted-foreground">
+                Wähle das Modell, das Analyse und Website-Generierung durchführt.
+              </p>
+            </div>
+
+            <div className="grid gap-3">
+              {PROVIDERS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setLlmProvider(p.id)}
+                  className={cn(
+                    "w-full text-left rounded-xl border-2 p-4 transition-all duration-150",
+                    llmProvider === p.id
+                      ? "border-primary bg-primary/5 shadow-sm"
+                      : "border-border/60 hover:border-border bg-background"
+                  )}
+                >
+                  <div className="flex items-start gap-3">
+                    {/* Radio indicator */}
+                    <div
+                      className={cn(
+                        "mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all",
+                        llmProvider === p.id
+                          ? "border-primary bg-primary"
+                          : "border-border bg-background"
+                      )}
+                    >
+                      {llmProvider === p.id && (
+                        <div className="w-1.5 h-1.5 rounded-full bg-primary-foreground" />
+                      )}
+                    </div>
+
+                    {/* Icon */}
+                    <div
+                      className={cn(
+                        "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
+                        llmProvider === p.id ? "bg-primary/10 text-primary" : "bg-secondary text-muted-foreground"
+                      )}
+                    >
+                      {p.icon}
+                    </div>
+
+                    {/* Text */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium">{p.name}</span>
+                        <span
+                          className={cn(
+                            "text-[10px] font-medium px-1.5 py-0.5 rounded-full",
+                            llmProvider === p.id
+                              ? "bg-primary/15 text-primary"
+                              : "bg-secondary text-muted-foreground"
+                          )}
+                        >
+                          {p.badge}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                        {p.description}
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {(llmProvider === "gemini" || llmProvider === "claude") && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 leading-relaxed">
+                <strong>Hinweis:</strong> Für{" "}
+                {llmProvider === "gemini" ? "Gemini" : "Claude"} muss der API-Key{" "}
+                <code className="font-mono bg-amber-100 px-1 rounded">
+                  {llmProvider === "gemini" ? "GEMINI_API_KEY" : "ANTHROPIC_API_KEY"}
+                </code>{" "}
+                als Umgebungsvariable gesetzt sein. Auf Hetzner: in der <code className="font-mono bg-amber-100 px-1 rounded">.env</code>-Datei eintragen.
+              </div>
+            )}
+          </div>
+
           {/* Info Box */}
           <div className="bg-accent/5 border border-accent/20 rounded-xl p-4">
             <p className="text-xs text-muted-foreground leading-relaxed">
               <strong className="text-foreground">Was passiert als nächstes?</strong> Das Tool
               scraped alle URLs, extrahiert Texte und Struktur, analysiert USPs und Conversion-Muster
-              per KI und generiert eine überlegene Website. Dieser Prozess dauert ca. 1–3 Minuten.
+              mit <strong className="text-foreground">{PROVIDERS.find(p => p.id === llmProvider)?.name}</strong> und
+              generiert eine überlegene Website. Dieser Prozess dauert ca. 1–3 Minuten.
             </p>
           </div>
 

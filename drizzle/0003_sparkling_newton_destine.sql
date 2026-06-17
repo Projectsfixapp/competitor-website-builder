@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `llmProvider` enum('manus','gemini','claude') DEFAULT 'manus' NOT NULL;

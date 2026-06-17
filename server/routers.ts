@@ -57,10 +57,11 @@ export const appRouter = router({
         z.object({
           name: z.string().min(1).max(255),
           urls: z.array(z.string().url()).min(1).max(5),
+          llmProvider: z.enum(["manus", "gemini", "claude"]).default("manus"),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const projectId = await createProject(ctx.user.id, input.name);
+        const projectId = await createProject(ctx.user.id, input.name, input.llmProvider);
         await insertCompetitorUrls(projectId, input.urls);
         return { projectId };
       }),
@@ -182,7 +183,10 @@ export function registerAnalysisRoute(app: Express) {
       await updateProjectStatus(projectId, "analyzing");
       send("status", { step: "analyzing", message: "Analysiere Inhalte mit KI…", progress: 40 });
 
-      const insights = await analyzeCompetitors(scrapedPages);
+      const provider = (project.llmProvider ?? "manus") as "manus" | "gemini" | "claude";
+      send("status", { step: "analyzing", message: `Analysiere mit ${provider === "gemini" ? "Gemini" : provider === "claude" ? "Claude" : "Manus"}…`, progress: 42 });
+
+      const insights = await analyzeCompetitors(scrapedPages, provider);
       await upsertAnalysisResult(projectId, insights);
 
       send("analysis", { insights });
@@ -190,9 +194,9 @@ export function registerAnalysisRoute(app: Express) {
 
       // ── Step 3: Generation ────────────────────────────────────────────────
       await updateProjectStatus(projectId, "generating");
-      send("status", { step: "generating", message: "Generiere überlegene Website…", progress: 70 });
+      send("status", { step: "generating", message: `Generiere Website mit ${provider === "gemini" ? "Gemini" : provider === "claude" ? "Claude" : "Manus"}…`, progress: 70 });
 
-      const websiteData = await generateWebsite(insights, scrapedPages);
+      const websiteData = await generateWebsite(insights, scrapedPages, provider);
       await upsertGeneratedWebsite(projectId, websiteData.htmlContent, websiteData.configJson);
       await updateProjectStatus(projectId, "done");
 

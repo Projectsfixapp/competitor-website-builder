@@ -68,10 +68,10 @@ export async function getUserByOpenId(openId: string) {
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
-export async function createProject(userId: number, name: string) {
+export async function createProject(userId: number, name: string, llmProvider: "manus" | "gemini" | "claude" = "manus") {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const result = await db.insert(projects).values({ userId, name, status: "pending" });
+  const result = await db.insert(projects).values({ userId, name, status: "pending", llmProvider });
   return result[0].insertId as number;
 }
 

@@ -3,7 +3,7 @@
  * Extracts insights from scraped pages and generates a superior website.
  */
 
-import { invokeLLM } from "./_core/llm";
+import { callLLM, type LLMProvider } from "./llmAdapter";
 import type { ScrapedPage } from "./scraper";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ export interface GeneratedWebsiteData {
 
 // ─── Analysis ─────────────────────────────────────────────────────────────────
 
-export async function analyzeCompetitors(pages: ScrapedPage[]): Promise<CompetitorInsights> {
+export async function analyzeCompetitors(pages: ScrapedPage[], provider: LLMProvider = "manus"): Promise<CompetitorInsights> {
   const pagesText = pages
     .map(
       (p, i) => `
@@ -45,7 +45,9 @@ Volltext (Auszug): ${p.fullText.slice(0, 2000)}
     )
     .join("\n");
 
-  const response = await invokeLLM({
+  const raw = await callLLM({
+    provider,
+    responseFormat: "json",
     messages: [
       {
         role: "system",
@@ -78,58 +80,9 @@ Gib folgendes JSON zurück:
 }`,
       },
     ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: "competitor_insights",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: {
-            usps: { type: "array", items: { type: "string" } },
-            keywords: { type: "array", items: { type: "string" } },
-            toneOfVoice: { type: "string" },
-            structurePatterns: { type: "array", items: { type: "string" } },
-            ctaPatterns: { type: "array", items: { type: "string" } },
-            targetAudience: { type: "string" },
-            competitorSummaries: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  url: { type: "string" },
-                  title: { type: "string" },
-                  summary: { type: "string" },
-                  usps: { type: "array", items: { type: "string" } },
-                },
-                required: ["url", "title", "summary", "usps"],
-                additionalProperties: false,
-              },
-            },
-          },
-          required: [
-            "usps",
-            "keywords",
-            "toneOfVoice",
-            "structurePatterns",
-            "ctaPatterns",
-            "targetAudience",
-            "competitorSummaries",
-          ],
-          additionalProperties: false,
-        },
-      },
-    },
   });
 
-  const rawContent = response.choices[0]?.message?.content;
-  const content = typeof rawContent === "string" ? rawContent : "{}";
-
-  // Robuste JSON-Extraktion: Markdown-Wrapper entfernen falls vorhanden
-  const jsonStr = content
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```\s*$/i, "")
-    .trim();
+  const jsonStr = raw;
 
   let parsed: Partial<CompetitorInsights>;
   try {
@@ -155,7 +108,8 @@ Gib folgendes JSON zurück:
 
 export async function generateWebsite(
   insights: CompetitorInsights,
-  pages: ScrapedPage[]
+  pages: ScrapedPage[],
+  provider: LLMProvider = "manus"
 ): Promise<GeneratedWebsiteData> {
   const insightsSummary = `
 USPs der Mitbewerber: ${insights.usps.join(", ")}
@@ -167,7 +121,9 @@ CTA-Muster: ${insights.ctaPatterns.join(", ")}
 Branche/Kontext: ${pages[0]?.title ?? "Unbekannt"}
 `;
 
-  const response = await invokeLLM({
+  const htmlContent_raw = await callLLM({
+    provider,
+    responseFormat: "text",
     messages: [
       {
         role: "system",
@@ -223,14 +179,7 @@ Wichtig:
     ],
   });
 
-  const rawHtml = response.choices[0]?.message?.content;
-  let htmlContent = typeof rawHtml === "string" ? rawHtml : "";
-
-  // Markdown-Wrapper entfernen falls vorhanden
-  htmlContent = htmlContent
-    .replace(/^```(?:html)?\s*/i, "")
-    .replace(/\s*```\s*$/i, "")
-    .trim();
+  let htmlContent = htmlContent_raw;
 
   // Validierung: Muss ein vollständiges HTML-Dokument sein
   if (!htmlContent.includes("<!DOCTYPE") && !htmlContent.includes("<html")) {

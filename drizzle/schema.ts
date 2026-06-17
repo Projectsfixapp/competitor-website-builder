@@ -32,6 +32,9 @@ export const projects = mysqlTable("projects", {
   status: mysqlEnum("status", ["pending", "scraping", "analyzing", "generating", "done", "error"])
     .default("pending")
     .notNull(),
+  llmProvider: mysqlEnum("llmProvider", ["manus", "gemini", "claude"])
+    .default("manus")
+    .notNull(),
   errorMessage: text("errorMessage"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
