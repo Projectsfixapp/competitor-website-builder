@@ -1,5 +1,27 @@
 {
   "version": "7",
   "dialect": "mysql",
-  "entries": []
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1781692201161,
+      "tag": "0000_fantastic_elektra",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1781692335917,
+      "tag": "0001_motionless_firestar",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1781692370434,
+      "tag": "0002_reflective_red_hulk",
+      "breakpoints": true
+    }
+  ]
 }

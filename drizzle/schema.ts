@@ -1,17 +1,15 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import {
+  int,
+  json,
+  mysqlEnum,
+  mysqlTable,
+  text,
+  timestamp,
+  varchar,
+} from "drizzle-orm/mysql-core";
 
-/**
- * Core user table backing auth flow.
- * Extend this file with additional tables as your product grows.
- * Columns use camelCase to match both database fields and generated types.
- */
 export const users = mysqlTable("users", {
-  /**
-   * Surrogate primary key. Auto-incremented numeric value managed by the database.
-   * Use this for relations between tables.
-   */
   id: int("id").autoincrement().primaryKey(),
-  /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
@@ -25,4 +23,69 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-// TODO: Add your tables here
+// ─── Projects ────────────────────────────────────────────────────────────────
+
+export const projects = mysqlTable("projects", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  status: mysqlEnum("status", ["pending", "scraping", "analyzing", "generating", "done", "error"])
+    .default("pending")
+    .notNull(),
+  errorMessage: text("errorMessage"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Project = typeof projects.$inferSelect;
+export type InsertProject = typeof projects.$inferInsert;
+
+// ─── Competitor URLs ──────────────────────────────────────────────────────────
+
+export const competitorUrls = mysqlTable("competitor_urls", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  url: text("url").notNull(),
+  title: text("title"),
+  scrapedContent: text("scrapedContent"),
+  scrapedAt: timestamp("scrapedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type CompetitorUrl = typeof competitorUrls.$inferSelect;
+export type InsertCompetitorUrl = typeof competitorUrls.$inferInsert;
+
+// ─── Analysis Results ─────────────────────────────────────────────────────────
+
+export const analysisResults = mysqlTable("analysis_results", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull().unique(),
+  usps: json("usps").$type<string[]>(),
+  keywords: json("keywords").$type<string[]>(),
+  toneOfVoice: text("toneOfVoice"),
+  structurePatterns: json("structurePatterns").$type<string[]>(),
+  ctaPatterns: json("ctaPatterns").$type<string[]>(),
+  targetAudience: text("targetAudience"),
+  competitorSummaries: json("competitorSummaries").$type<
+    Array<{ url: string; title: string; summary: string; usps: string[] }>
+  >(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type AnalysisResult = typeof analysisResults.$inferSelect;
+export type InsertAnalysisResult = typeof analysisResults.$inferInsert;
+
+// ─── Generated Websites ───────────────────────────────────────────────────────
+
+export const generatedWebsites = mysqlTable("generated_websites", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull().unique(),
+  htmlContent: text("htmlContent").notNull(),
+  configJson: json("configJson").$type<Record<string, unknown>>(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type GeneratedWebsite = typeof generatedWebsites.$inferSelect;
+export type InsertGeneratedWebsite = typeof generatedWebsites.$inferInsert;
