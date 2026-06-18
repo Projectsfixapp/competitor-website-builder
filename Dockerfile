@@ -35,7 +35,6 @@ RUN pnpm install --frozen-lockfile --prod
 
 # Copy built artifacts
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/client/dist ./client/dist
 
 EXPOSE 3000
 
