@@ -19,22 +19,24 @@ COPY . .
 RUN pnpm build
 
 # ─── Stage 2: Production ──────────────────────────────────────────────────────
-FROM node:22-alpine AS production
+  FROM node:22-alpine AS production
 
-WORKDIR /app
+  WORKDIR /app
 
-# Install pnpm for production deps only
-RUN npm install -g pnpm@10.4.1
+  COPY package.json ./
+  COPY patches/ ./patches/
 
-# Copy dependency manifests
-COPY package.json pnpm-lock.yaml ./
-COPY patches/ ./patches/
+  # node_modules vom Builder übernehmen (enthält alle deps inkl. vite)
+  COPY --from=builder /app/node_modules ./node_modules
 
-# Install production dependencies only
-RUN pnpm install --frozen-lockfile --prod
+  # Gebaute Artefakte kopieren
+  COPY --from=builder /app/dist ./dist
 
-# Copy built artifacts
-COPY --from=builder /app/dist ./dist
+  EXPOSE 3000
+
+  ENV NODE_ENV=production
+
+  CMD ["node", "dist/index.js"]
 
 EXPOSE 3000
 
