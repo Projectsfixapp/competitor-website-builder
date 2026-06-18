@@ -19,24 +19,18 @@ COPY . .
 RUN pnpm build
 
 # ─── Stage 2: Production ──────────────────────────────────────────────────────
-  FROM node:22-alpine AS production
+FROM node:22-alpine AS production
 
-  WORKDIR /app
+WORKDIR /app
 
-  COPY package.json ./
-  COPY patches/ ./patches/
+COPY package.json ./
+COPY patches/ ./patches/
 
-  # node_modules vom Builder übernehmen (enthält alle deps inkl. vite)
-  COPY --from=builder /app/node_modules ./node_modules
+# node_modules vom Builder übernehmen (enthält alle deps inkl. vite, das server/_core/vite.ts zur Laufzeit importiert)
+COPY --from=builder /app/node_modules ./node_modules
 
-  # Gebaute Artefakte kopieren
-  COPY --from=builder /app/dist ./dist
-
-  EXPOSE 3000
-
-  ENV NODE_ENV=production
-
-  CMD ["node", "dist/index.js"]
+# Gebaute Artefakte kopieren
+COPY --from=builder /app/dist ./dist
 
 EXPOSE 3000
 
