@@ -28,28 +28,12 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
-// HTTP Basic Auth middleware – protects all routes when BASIC_AUTH_USER + BASIC_AUTH_PASS are set
-function basicAuthMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const user = process.env.BASIC_AUTH_USER;
-  const pass = process.env.BASIC_AUTH_PASS;
-  // Skip if not configured or for health check
-  if (!user || !pass || req.path === "/api/health") return next();
-  const authHeader = req.headers["authorization"] || "";
-  const b64 = authHeader.startsWith("Basic ") ? authHeader.slice(6) : "";
-  const [u, p] = Buffer.from(b64, "base64").toString().split(":");
-  if (u === user && p === pass) return next();
-  res.set("WWW-Authenticate", 'Basic realm="Competitor Builder"');
-  res.status(401).send("Zugang verweigert – bitte Benutzername und Passwort eingeben.");
-}
-
 async function startServer() {
   const app = express();
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-  // Apply Basic Auth before all routes
-  app.use(basicAuthMiddleware);
   registerStorageProxy(app);
   registerOAuthRoutes(app);
   registerAnalysisRoute(app);

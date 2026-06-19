@@ -16,10 +16,6 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
-      - key: BASIC_AUTH_USER
-        value: admin
-      - key: BASIC_AUTH_PASS
-        generateValue: true
       # LLM Keys – in Render Dashboard eintragen
       # GEMINI_API_KEY ist PFLICHT, nicht optional: wird auch fuer die
       # KI-Bild-Fallback-Generierung genutzt (server/geminiImages.ts),
