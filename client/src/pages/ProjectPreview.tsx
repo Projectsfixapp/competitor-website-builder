@@ -296,7 +296,16 @@ export default function ProjectPreview() {
                   : "w-full h-full border-0"
               }`}
               title="Website-Vorschau"
-              sandbox="allow-scripts allow-same-origin"
+              // allow-same-origin (needed so the parent can read/write
+              // contentDocument for inline editing) and allow-scripts must
+              // never be combined: together they'd let an inline <script> in
+              // LLM-generated HTML — itself influenced by scraped competitor
+              // text and later chat prompts — escape into this app's own
+              // origin (cookies, session, authenticated tRPC calls). Dropping
+              // allow-scripts means embedded <script> tags simply don't run
+              // here; they still work once the user exports/deploys the HTML
+              // to its own origin.
+              sandbox="allow-same-origin"
             />
           </div>
         ) : (
