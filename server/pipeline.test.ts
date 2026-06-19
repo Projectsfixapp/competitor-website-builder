@@ -1,20 +1,31 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import type { ScrapedPage } from "./scraper";
+import type { ScrapedImage, ScrapedPage } from "./scraper";
 
 const callLLMMock = vi.fn();
 vi.mock("./llmAdapter", () => ({
   callLLM: (...args: unknown[]) => callLLMMock(...args),
 }));
 
+const generateImageWithGeminiMock = vi.fn();
+vi.mock("./geminiImages", () => ({
+  generateImageWithGemini: (...args: unknown[]) => generateImageWithGeminiMock(...args),
+}));
+
 import {
   analyzeCompetitors,
+  collectUsableImages,
   computeSeoSignals,
   computeStructureSignals,
   extractConfigJson,
+  generateWebsite,
   resolveTheme,
   scoreSeoSignals,
   scoreStructureSignals,
 } from "./pipeline";
+
+function makeImage(overrides: Partial<ScrapedImage> = {}): ScrapedImage {
+  return { url: "https://example.com/img.jpg", alt: "", width: null, height: null, ...overrides };
+}
 
 function makePage(overrides: Partial<ScrapedPage> = {}): ScrapedPage {
   return {
@@ -251,7 +262,7 @@ describe("resolveTheme", () => {
       [makePage({ url: "https://own.example" })],
       null
     );
-    expect(theme).toEqual({ backgroundColor: "#FFFFFF", accentColors: ["#112233"], logoUrl: null });
+    expect(theme).toEqual({ backgroundColor: "#FFFFFF", accentColors: ["#112233"], logoUrl: null, images: [] });
   });
 
   it("falls back to defaults when manual mode has no stored colors", () => {
@@ -303,5 +314,98 @@ describe("resolveTheme", () => {
       null
     );
     expect(theme.logoUrl).toBeNull();
+  });
+});
+
+describe("collectUsableImages", () => {
+  it("prioritizes the own site's images before competitor images", () => {
+    const pages = [
+      makePage({ url: "https://competitor.example", images: [makeImage({ url: "https://competitor.example/a.jpg" })] }),
+      makePage({ url: "https://own.example", images: [makeImage({ url: "https://own.example/b.jpg" })] }),
+    ];
+    const result = collectUsableImages(pages, "https://own.example", null);
+    expect(result).toEqual(["https://own.example/b.jpg", "https://competitor.example/a.jpg"]);
+  });
+
+  it("excludes the logo URL from the content image list", () => {
+    const pages = [
+      makePage({
+        images: [makeImage({ url: "https://example.com/logo.png" }), makeImage({ url: "https://example.com/team.jpg" })],
+      }),
+    ];
+    const result = collectUsableImages(pages, null, "https://example.com/logo.png");
+    expect(result).toEqual(["https://example.com/team.jpg"]);
+  });
+
+  it("excludes icon-sized images (likely decorative, not content photos)", () => {
+    const pages = [
+      makePage({
+        images: [
+          makeImage({ url: "https://example.com/icon.png", width: 32, height: 32 }),
+          makeImage({ url: "https://example.com/photo.jpg", width: 800, height: 600 }),
+          makeImage({ url: "https://example.com/no-dimensions.jpg" }), // unknown dimensions are kept
+        ],
+      }),
+    ];
+    const result = collectUsableImages(pages, null, null);
+    expect(result).toEqual(["https://example.com/photo.jpg", "https://example.com/no-dimensions.jpg"]);
+  });
+
+  it("deduplicates identical URLs across pages and respects the limit", () => {
+    const pages = [
+      makePage({ url: "https://a.example", images: [makeImage({ url: "https://shared.example/x.jpg" })] }),
+      makePage({ url: "https://b.example", images: [makeImage({ url: "https://shared.example/x.jpg" })] }),
+    ];
+    expect(collectUsableImages(pages, null, null)).toEqual(["https://shared.example/x.jpg"]);
+    expect(collectUsableImages(pages, null, null, 0)).toEqual([]);
+  });
+});
+
+describe("generateWebsite image sourcing", () => {
+  beforeEach(() => {
+    callLLMMock.mockReset();
+    generateImageWithGeminiMock.mockReset();
+    callLLMMock.mockResolvedValue("<!DOCTYPE html><html><body>OK</body></html>");
+  });
+
+  const baseInsights = {
+    usps: [],
+    keywords: [],
+    toneOfVoice: "Professionell",
+    structurePatterns: [],
+    ctaPatterns: [],
+    targetAudience: "KMU",
+    competitorSummaries: [],
+    scores: [],
+  };
+
+  it("uses real scraped images and never calls Gemini when usable images exist", async () => {
+    const theme = { backgroundColor: "#FAFAF9", accentColors: ["#C8A96E"], logoUrl: null, images: ["https://example.com/real.jpg"] };
+    await generateWebsite(baseInsights, [makePage()], "manus", theme);
+
+    expect(generateImageWithGeminiMock).not.toHaveBeenCalled();
+    const userPrompt = callLLMMock.mock.calls[0]![0].messages[0].content as string;
+    expect(userPrompt).toContain("https://example.com/real.jpg");
+    expect(userPrompt).not.toContain("Unsplash-URLs mit passenden Suchbegriffen");
+  });
+
+  it("falls back to Gemini-generated images when no real images were found", async () => {
+    generateImageWithGeminiMock.mockResolvedValue({ dataUrl: "data:image/png;base64,AAAA" });
+    const theme = { backgroundColor: "#FAFAF9", accentColors: ["#C8A96E"], logoUrl: null, images: [] };
+    await generateWebsite(baseInsights, [makePage()], "manus", theme);
+
+    expect(generateImageWithGeminiMock).toHaveBeenCalledTimes(2); // hero + supporting image
+    const systemPrompt = callLLMMock.mock.calls[0]![0].messages[0].content as string;
+    expect(systemPrompt).toContain("data:image/png;base64,AAAA");
+  });
+
+  it("falls back to a photo-free, CSS-only instruction when Gemini also fails", async () => {
+    generateImageWithGeminiMock.mockRejectedValue(new Error("GEMINI_API_KEY nicht gesetzt"));
+    const theme = { backgroundColor: "#FAFAF9", accentColors: ["#C8A96E"], logoUrl: null, images: [] };
+    await generateWebsite(baseInsights, [makePage()], "manus", theme);
+
+    const systemPrompt = callLLMMock.mock.calls[0]![0].messages[0].content as string;
+    expect(systemPrompt).toContain("keine echten Fotos vor");
+    expect(systemPrompt).not.toContain("Unsplash-URLs mit passenden Suchbegriffen");
   });
 });

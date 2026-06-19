@@ -21,6 +21,9 @@ services:
       - key: BASIC_AUTH_PASS
         generateValue: true
       # LLM Keys – in Render Dashboard eintragen
+      # GEMINI_API_KEY ist PFLICHT, nicht optional: wird auch fuer die
+      # KI-Bild-Fallback-Generierung genutzt (server/geminiImages.ts),
+      # unabhaengig davon welcher Provider fuer Text/Analyse gewaehlt ist.
       - key: GEMINI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY

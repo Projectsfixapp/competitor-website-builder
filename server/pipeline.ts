@@ -5,8 +5,9 @@
 
 import JSON5 from "json5";
 import { DEFAULT_ACCENT_COLORS, DEFAULT_BACKGROUND_HEX } from "@shared/const";
+import { generateImageWithGemini } from "./geminiImages";
 import { callLLM, type LLMProvider } from "./llmAdapter";
-import type { ScrapedPage } from "./scraper";
+import type { ScrapedImage, ScrapedPage } from "./scraper";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -293,6 +294,8 @@ export interface ResolvedTheme {
   backgroundColor: string;
   accentColors: string[];
   logoUrl: string | null;
+  /** Real, already-existing image URLs usable as content photos (excludes the logo). */
+  images: string[];
 }
 
 interface ProjectThemeConfig {
@@ -301,13 +304,52 @@ interface ProjectThemeConfig {
   accentColors: string[] | null;
 }
 
+const MIN_USABLE_IMAGE_DIMENSION = 150;
+const MAX_USABLE_IMAGES = 12;
+
+function isLikelyContentImage(img: ScrapedImage, excludeUrl: string | null): boolean {
+  if (excludeUrl && img.url === excludeUrl) return false; // exclude the logo itself
+  if (img.width !== null && img.width < MIN_USABLE_IMAGE_DIMENSION) return false;
+  if (img.height !== null && img.height < MIN_USABLE_IMAGE_DIMENSION) return false;
+  return true;
+}
+
+/**
+ * Real image URLs to offer the website generator, own-site images first
+ * (most relevant — these are literally the customer's own photos), then
+ * competitor images, deduped, excluding the logo and obvious icon-sized images.
+ */
+export function collectUsableImages(
+  pages: ScrapedPage[],
+  ownSiteUrl: string | null,
+  logoUrl: string | null,
+  limit = MAX_USABLE_IMAGES
+): string[] {
+  const ownPage = ownSiteUrl ? pages.find((p) => p.url === ownSiteUrl) : undefined;
+  const orderedPages = ownPage ? [ownPage, ...pages.filter((p) => p !== ownPage)] : pages;
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const page of orderedPages) {
+    for (const img of page.images) {
+      if (result.length >= limit) return result;
+      if (seen.has(img.url) || !isLikelyContentImage(img, logoUrl)) continue;
+      seen.add(img.url);
+      result.push(img.url);
+    }
+  }
+  return result;
+}
+
 /**
  * Logo always comes from the page marked as the customer's own site, if any
  * — that's a near-mandatory "use the real logo" requirement, independent of
  * how colors are chosen. Colors follow colorMode: "extract" uses the own
  * site's detected brand colors (falling back to the manual/default palette
  * if extraction found nothing usable); "manual" uses the project's stored
- * choice.
+ * choice. Content images are always real scraped photos when any exist —
+ * AI-generated fallback images (see generateWebsite) only kick in when this
+ * list comes back empty.
  */
 export function resolveTheme(
   project: ProjectThemeConfig,
@@ -316,15 +358,45 @@ export function resolveTheme(
 ): ResolvedTheme {
   const ownPage = ownSiteUrl ? scrapedPages.find((p) => p.url === ownSiteUrl) ?? null : null;
   const logoUrl = ownPage?.logoUrl ?? null;
+  const images = collectUsableImages(scrapedPages, ownSiteUrl, logoUrl);
 
   if (project.colorMode === "extract" && ownPage && ownPage.brandColors.length > 0) {
-    return { backgroundColor: DEFAULT_BACKGROUND_HEX, accentColors: ownPage.brandColors, logoUrl };
+    return { backgroundColor: DEFAULT_BACKGROUND_HEX, accentColors: ownPage.brandColors, logoUrl, images };
   }
   return {
     backgroundColor: project.backgroundColor ?? DEFAULT_BACKGROUND_HEX,
     accentColors: project.accentColors?.length ? project.accentColors : DEFAULT_ACCENT_COLORS,
     logoUrl,
+    images,
   };
+}
+
+const FALLBACK_IMAGE_PROMPTS = [
+  (context: string, tone: string) =>
+    `Professionelles, hochwertiges Hero-Foto für die Website von "${context}". Stil/Tonalität: ${tone}. Fotorealistisch, helle freundliche Stimmung, keine Texte oder Logos im Bild.`,
+  (context: string, tone: string) =>
+    `Professionelles Foto, das die Arbeit/Dienstleistung von "${context}" zeigt. Stil/Tonalität: ${tone}. Fotorealistisch, helle Stimmung, keine Texte im Bild.`,
+];
+
+/**
+ * AI-generates a couple of stand-in photos via Gemini when no real images
+ * were found at all (e.g. no own site marked/provided). Best-effort: a
+ * missing/invalid GEMINI_API_KEY or an API failure just yields fewer (or
+ * zero) images rather than failing the whole website generation — the
+ * generator prompt is instructed to fall back to a photo-free, CSS-only
+ * design when the image list comes back empty.
+ */
+async function generateFallbackImages(context: string, tone: string): Promise<string[]> {
+  const images: string[] = [];
+  for (const buildPrompt of FALLBACK_IMAGE_PROMPTS) {
+    try {
+      const { dataUrl } = await generateImageWithGemini(buildPrompt(context, tone));
+      images.push(dataUrl);
+    } catch (err) {
+      console.warn("[Pipeline] KI-Bild-Fallback fehlgeschlagen, fahre ohne dieses Bild fort:", err);
+    }
+  }
+  return images;
 }
 
 // ─── Website Generator ────────────────────────────────────────────────────────
@@ -333,8 +405,11 @@ export async function generateWebsite(
   insights: CompetitorInsights,
   pages: ScrapedPage[],
   provider: LLMProvider = "manus",
-  theme: ResolvedTheme = { backgroundColor: DEFAULT_BACKGROUND_HEX, accentColors: DEFAULT_ACCENT_COLORS, logoUrl: null }
+  theme: ResolvedTheme = { backgroundColor: DEFAULT_BACKGROUND_HEX, accentColors: DEFAULT_ACCENT_COLORS, logoUrl: null, images: [] }
 ): Promise<GeneratedWebsiteData> {
+  const context = pages[0]?.title ?? insights.targetAudience;
+  const availableImages =
+    theme.images.length > 0 ? theme.images : await generateFallbackImages(context, insights.toneOfVoice);
   const rankingSummary = insights.scores
     .map(
       (s) =>
@@ -349,7 +424,7 @@ Tonalität: ${insights.toneOfVoice}
 Zielgruppe: ${insights.targetAudience}
 Struktur-Muster: ${insights.structurePatterns.join(", ")}
 CTA-Muster: ${insights.ctaPatterns.join(", ")}
-Branche/Kontext: ${pages[0]?.title ?? "Unbekannt"}
+Branche/Kontext: ${context}
 Wettbewerbs-Ranking:
 ${rankingSummary}
 `;
@@ -358,6 +433,10 @@ ${rankingSummary}
   const logoRule = theme.logoUrl
     ? `\n- Logo: Verwende GENAU diese Bild-URL im Header/in der Navigation (das echte Logo des Kunden, nicht neu erfinden): ${theme.logoUrl}`
     : "";
+  const imageRule =
+    availableImages.length > 0
+      ? `- Bilder: Verwende AUSSCHLIESSLICH diese ${availableImages.length} echten Bild-URLs für inhaltliche Fotos (Hero, Galerie, Team etc.) — erfinde KEINE eigenen Bild-URLs (auch keine Unsplash-Links, diese existieren nicht und führen zu kaputten Bildern):\n  ${availableImages.join("\n  ")}`
+      : "- Bilder: Es liegen keine echten Fotos vor — verwende stattdessen bewusst Farbflächen, Verläufe in den Akzentfarben und Inline-SVG-Illustrationen statt Fotos. Erfinde KEINE Bild-URLs (auch keine Unsplash-Links), diese wären kaputt.";
 
   const htmlContent_raw = await callLLM({
     provider,
@@ -375,7 +454,7 @@ DESIGN-REGELN (ABSOLUT VERBINDLICH):
 - Großzügiges Whitespace: padding min. 80px vertikal, max-width 1200px zentriert
 - Keine KI-Klischees: keine Neon-Effekte, keine generischen Verläufe
 - Wirkt wie von einer High-End-Webagentur gestaltet
-- Bilder: Unsplash-URLs mit passenden Suchbegriffen (https://images.unsplash.com/photo-...)
+${imageRule}
 - Icons: Inline-SVG oder Unicode-Symbole${logoRule}
 
 TECHNISCHE ANFORDERUNGEN:

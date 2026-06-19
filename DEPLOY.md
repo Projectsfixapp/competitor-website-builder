@@ -79,12 +79,12 @@ nano .env
 | `VITE_APP_ID` | Manus OAuth App-ID | Manus Projekteinstellungen |
 | `BUILT_IN_FORGE_API_KEY` | Manus LLM API-Key | Manus Projekteinstellungen |
 
-**Optionale Felder (für Gemini/Claude-Provider):**
+**`GEMINI_API_KEY` ist nicht mehr rein optional:** wird zusätzlich zur Text-Analyse auch für die KI-Bild-Fallback-Generierung genutzt (`server/geminiImages.ts`), unabhängig davon, welcher LLM-Provider für die Analyse gewählt wird. Ohne diesen Key generiert die App bei fehlenden echten Bildern einfach foto-freie, farbflächenbasierte Designs statt Fotos — kein Absturz, aber weniger visuelle Vielfalt.
 
 | Variable | Beschreibung |
 |---|---|
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/app/apikey) |
-| `ANTHROPIC_API_KEY` | [Anthropic Console](https://console.anthropic.com/settings/keys) |
+| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/app/apikey) — Pflicht für Bild-Fallback, optional nur für Text falls Gemini nicht als Analyse-Provider gewählt wird |
+| `ANTHROPIC_API_KEY` | [Anthropic Console](https://console.anthropic.com/settings/keys) — nur falls Claude als Analyse-Provider gewählt wird |
 
 ---
 
