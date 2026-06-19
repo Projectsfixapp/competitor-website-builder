@@ -68,10 +68,27 @@ export async function getUserByOpenId(openId: string) {
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
-export async function createProject(userId: number, name: string, llmProvider: "manus" | "gemini" | "claude" = "manus") {
+export async function createProject(
+  userId: number,
+  name: string,
+  llmProvider: "manus" | "gemini" | "claude" = "manus",
+  theme: { colorMode: "manual" | "extract"; backgroundColor: string | null; accentColors: string[] | null } = {
+    colorMode: "manual",
+    backgroundColor: null,
+    accentColors: null,
+  }
+) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const result = await db.insert(projects).values({ userId, name, status: "pending", llmProvider });
+  const result = await db.insert(projects).values({
+    userId,
+    name,
+    status: "pending",
+    llmProvider,
+    colorMode: theme.colorMode,
+    backgroundColor: theme.backgroundColor,
+    accentColors: theme.accentColors,
+  });
   return result[0].insertId as number;
 }
 
@@ -112,11 +129,14 @@ export async function deleteProject(id: number) {
 
 // ─── Competitor URLs ──────────────────────────────────────────────────────────
 
-export async function insertCompetitorUrls(projectId: number, urls: string[]) {
+export async function insertCompetitorUrls(
+  projectId: number,
+  urls: Array<{ url: string; isOwnSite: boolean }>
+) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  for (const url of urls) {
-    await db.insert(competitorUrls).values({ projectId, url });
+  for (const { url, isOwnSite } of urls) {
+    await db.insert(competitorUrls).values({ projectId, url, isOwnSite });
   }
 }
 

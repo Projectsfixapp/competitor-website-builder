@@ -1,4 +1,5 @@
 import {
+  boolean,
   int,
   json,
   longtext,
@@ -36,6 +37,9 @@ export const projects = mysqlTable("projects", {
   llmProvider: mysqlEnum("llmProvider", ["manus", "gemini", "claude"])
     .default("manus")
     .notNull(),
+  colorMode: mysqlEnum("colorMode", ["manual", "extract"]).default("manual").notNull(),
+  backgroundColor: varchar("backgroundColor", { length: 16 }),
+  accentColors: json("accentColors").$type<string[]>(),
   errorMessage: text("errorMessage"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -50,6 +54,7 @@ export const competitorUrls = mysqlTable("competitor_urls", {
   id: int("id").autoincrement().primaryKey(),
   projectId: int("projectId").notNull(),
   url: text("url").notNull(),
+  isOwnSite: boolean("isOwnSite").default(false).notNull(),
   title: text("title"),
   scrapedContent: text("scrapedContent"),
   scrapedAt: timestamp("scrapedAt"),

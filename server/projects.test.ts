@@ -130,7 +130,7 @@ describe("projects.create", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.projects.create({
       name: "Neues Projekt",
-      urls: ["https://example.com"],
+      urls: [{ url: "https://example.com", isOwnSite: false }],
     });
     expect(result).toHaveProperty("projectId");
     expect(result.projectId).toBe(42);
@@ -141,7 +141,7 @@ describe("projects.create", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.projects.create({
       name: "Claude Projekt",
-      urls: ["https://example.com"],
+      urls: [{ url: "https://example.com", isOwnSite: false }],
       llmProvider: "claude",
     });
     expect(result).toHaveProperty("projectId");
@@ -152,7 +152,7 @@ describe("projects.create", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.projects.create({
       name: "Gemini Projekt",
-      urls: ["https://example.com"],
+      urls: [{ url: "https://example.com", isOwnSite: false }],
       llmProvider: "gemini",
     });
     expect(result).toHaveProperty("projectId");
@@ -164,7 +164,7 @@ describe("projects.create", () => {
     await expect(
       caller.projects.create({
         name: "Test",
-        urls: ["keine-url"],
+        urls: [{ url: "keine-url", isOwnSite: false }],
       })
     ).rejects.toThrow();
   });
@@ -176,6 +176,56 @@ describe("projects.create", () => {
       caller.projects.create({
         name: "Test",
         urls: [],
+      })
+    ).rejects.toThrow();
+  });
+
+  it("erlaubt höchstens eine URL als eigene Website", async () => {
+    const ctx = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.projects.create({
+        name: "Test",
+        urls: [
+          { url: "https://a.example", isOwnSite: true },
+          { url: "https://b.example", isOwnSite: true },
+        ],
+      })
+    ).rejects.toThrow();
+  });
+
+  it("lehnt colorMode 'extract' ohne markierte eigene Website ab", async () => {
+    const ctx = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.projects.create({
+        name: "Test",
+        urls: [{ url: "https://example.com", isOwnSite: false }],
+        colorMode: "extract",
+      })
+    ).rejects.toThrow();
+  });
+
+  it("akzeptiert colorMode 'extract' mit markierter eigener Website", async () => {
+    const ctx = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.projects.create({
+      name: "Test",
+      urls: [{ url: "https://example.com", isOwnSite: true }],
+      colorMode: "extract",
+    });
+    expect(result).toHaveProperty("projectId");
+  });
+
+  it("lehnt eine Hintergrundfarbe ab, die nicht im Preset-Katalog ist", async () => {
+    const ctx = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.projects.create({
+        name: "Test",
+        urls: [{ url: "https://example.com", isOwnSite: false }],
+        colorMode: "manual",
+        backgroundColor: "#123456",
       })
     ).rejects.toThrow();
   });

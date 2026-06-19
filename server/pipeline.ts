@@ -4,6 +4,7 @@
  */
 
 import JSON5 from "json5";
+import { DEFAULT_ACCENT_COLORS, DEFAULT_BACKGROUND_HEX } from "@shared/const";
 import { callLLM, type LLMProvider } from "./llmAdapter";
 import type { ScrapedPage } from "./scraper";
 
@@ -286,12 +287,53 @@ Wichtig für competitorScores:
   };
 }
 
+// ─── Theme resolution ─────────────────────────────────────────────────────────
+
+export interface ResolvedTheme {
+  backgroundColor: string;
+  accentColors: string[];
+  logoUrl: string | null;
+}
+
+interface ProjectThemeConfig {
+  colorMode: "manual" | "extract";
+  backgroundColor: string | null;
+  accentColors: string[] | null;
+}
+
+/**
+ * Logo always comes from the page marked as the customer's own site, if any
+ * — that's a near-mandatory "use the real logo" requirement, independent of
+ * how colors are chosen. Colors follow colorMode: "extract" uses the own
+ * site's detected brand colors (falling back to the manual/default palette
+ * if extraction found nothing usable); "manual" uses the project's stored
+ * choice.
+ */
+export function resolveTheme(
+  project: ProjectThemeConfig,
+  scrapedPages: ScrapedPage[],
+  ownSiteUrl: string | null
+): ResolvedTheme {
+  const ownPage = ownSiteUrl ? scrapedPages.find((p) => p.url === ownSiteUrl) ?? null : null;
+  const logoUrl = ownPage?.logoUrl ?? null;
+
+  if (project.colorMode === "extract" && ownPage && ownPage.brandColors.length > 0) {
+    return { backgroundColor: DEFAULT_BACKGROUND_HEX, accentColors: ownPage.brandColors, logoUrl };
+  }
+  return {
+    backgroundColor: project.backgroundColor ?? DEFAULT_BACKGROUND_HEX,
+    accentColors: project.accentColors?.length ? project.accentColors : DEFAULT_ACCENT_COLORS,
+    logoUrl,
+  };
+}
+
 // ─── Website Generator ────────────────────────────────────────────────────────
 
 export async function generateWebsite(
   insights: CompetitorInsights,
   pages: ScrapedPage[],
-  provider: LLMProvider = "manus"
+  provider: LLMProvider = "manus",
+  theme: ResolvedTheme = { backgroundColor: DEFAULT_BACKGROUND_HEX, accentColors: DEFAULT_ACCENT_COLORS, logoUrl: null }
 ): Promise<GeneratedWebsiteData> {
   const rankingSummary = insights.scores
     .map(
@@ -312,6 +354,11 @@ Wettbewerbs-Ranking:
 ${rankingSummary}
 `;
 
+  const accentColorsText = theme.accentColors.join(", ");
+  const logoRule = theme.logoUrl
+    ? `\n- Logo: Verwende GENAU diese Bild-URL im Header/in der Navigation (das echte Logo des Kunden, nicht neu erfinden): ${theme.logoUrl}`
+    : "";
+
   const htmlContent_raw = await callLLM({
     provider,
     responseFormat: "text",
@@ -322,14 +369,14 @@ ${rankingSummary}
 Du erstellst hochkonvertierende, technisch perfekte Websites als vollständiges HTML/CSS/JS-Dokument.
 
 DESIGN-REGELN (ABSOLUT VERBINDLICH):
-- Ausschließlich Light Mode: Off-White (#FAFAF9) Hintergrund, nie Dark Mode
+- Ausschließlich Light Mode: ${theme.backgroundColor} Hintergrund, nie Dark Mode
 - Schriftarten: Inter für Body, Playfair Display für Headlines (via Google Fonts CDN)
-- Farben: Primär #1A1A1A (fast schwarz), Akzent #C8A96E (warmes Gold), Hintergrund #FAFAF9
+- Farben: Primär #1A1A1A (fast schwarz), Akzent(e) ${accentColorsText}, Hintergrund ${theme.backgroundColor}
 - Großzügiges Whitespace: padding min. 80px vertikal, max-width 1200px zentriert
 - Keine KI-Klischees: keine Neon-Effekte, keine generischen Verläufe
 - Wirkt wie von einer High-End-Webagentur gestaltet
 - Bilder: Unsplash-URLs mit passenden Suchbegriffen (https://images.unsplash.com/photo-...)
-- Icons: Inline-SVG oder Unicode-Symbole
+- Icons: Inline-SVG oder Unicode-Symbole${logoRule}
 
 TECHNISCHE ANFORDERUNGEN:
 - Vollständiges, valides HTML5-Dokument (<!DOCTYPE html> bis </html>)

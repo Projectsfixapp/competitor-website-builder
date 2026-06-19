@@ -49,6 +49,10 @@ export interface ScrapedPage {
   seo: ScrapedSeoMeta;
   sitemapUrls: string[];
   fullText: string;
+  /** Up to 3 brand accent colors (hex), best-effort from theme-color meta + inline/`<style>` CSS. */
+  brandColors: string[];
+  /** Best-guess logo image URL (header/nav image, or alt text containing "logo"), or null if none found. */
+  logoUrl: string | null;
 }
 
 const SITEMAP_TIMEOUT_MS = 8000;
@@ -71,6 +75,112 @@ function resolveBaseUrl(pageUrl: string, $: cheerio.CheerioAPI): string {
   } catch {
     return pageUrl;
   }
+}
+
+const HEX_COLOR_RE = /#([0-9a-f]{3}|[0-9a-f]{6})\b/gi;
+const RGB_COLOR_RE = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*[\d.]+\s*)?\)/gi;
+
+function normalizeHex(hex: string): string | null {
+  let h = hex.replace("#", "").toLowerCase();
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  if (h.length !== 6 || !/^[0-9a-f]{6}$/.test(h)) return null;
+  return `#${h}`;
+}
+
+function rgbToHex(r: number, g: number, b: number): string | null {
+  if ([r, g, b].some((c) => !Number.isFinite(c) || c < 0 || c > 255)) return null;
+  return `#${[r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+/** Excludes near-white, near-black, and low-saturation greys — those are layout colors, not brand accents. */
+function isVividColor(hex: string): boolean {
+  const [r, g, b] = hexToRgb(hex);
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const lightness = (max + min) / 2;
+  const saturation = max === min ? 0 : (max - min) / (1 - Math.abs(2 * lightness - 1));
+  return lightness > 0.08 && lightness < 0.92 && saturation > 0.18;
+}
+
+function cssColorToHex(value: string): string | null {
+  const trimmed = value.trim();
+  const direct = normalizeHex(trimmed);
+  if (direct) return direct;
+  const rgbMatch = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(trimmed);
+  if (rgbMatch) return rgbToHex(Number(rgbMatch[1]), Number(rgbMatch[2]), Number(rgbMatch[3]));
+  return null;
+}
+
+/** Concatenates inline `style="..."` attributes and `<style>` block text — narrower and far less noisy than scanning raw HTML/JS for hex-like substrings. */
+function collectStyleText($: cheerio.CheerioAPI): string {
+  const parts: string[] = [];
+  $("[style]").each((_, el) => {
+    const style = $(el).attr("style");
+    if (style) parts.push(style);
+  });
+  $("style").each((_, el) => {
+    parts.push($(el).contents().text());
+  });
+  return parts.join(" ");
+}
+
+/**
+ * Best-effort brand accent color detection: theme-color meta tag first (an
+ * explicit, deliberate brand-color declaration when present), then the most
+ * frequent vivid colors found in inline styles / <style> blocks. Cannot see
+ * colors defined only in external stylesheets — that needs fetching and
+ * parsing linked CSS files, deferred for now.
+ */
+function extractBrandColors($: cheerio.CheerioAPI): string[] {
+  const ordered: string[] = [];
+  const themeColor = $('meta[name="theme-color"]').attr("content");
+  if (themeColor) {
+    const hex = cssColorToHex(themeColor);
+    if (hex) ordered.push(hex);
+  }
+
+  const styleText = collectStyleText($);
+  const counts = new Map<string, number>();
+  const record = (hex: string | null) => {
+    if (!hex || !isVividColor(hex) || ordered.includes(hex)) return;
+    counts.set(hex, (counts.get(hex) ?? 0) + 1);
+  };
+  for (const m of Array.from(styleText.matchAll(HEX_COLOR_RE))) {
+    record(normalizeHex(m[0]));
+  }
+  for (const m of Array.from(styleText.matchAll(RGB_COLOR_RE))) {
+    record(rgbToHex(Number(m[1]), Number(m[2]), Number(m[3])));
+  }
+  const byFrequency = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([hex]) => hex);
+
+  return [...ordered, ...byFrequency].slice(0, 3);
+}
+
+/** Best-guess logo: an image inside header/nav/home-link, falling back to alt text containing "logo". */
+function detectLogoUrl($: cheerio.CheerioAPI, baseUrl: string, images: ScrapedImage[]): string | null {
+  let candidate: string | null = null;
+  $("header img, nav img, a[href='/'] img, a[href='#'] img").each((_, el) => {
+    if (candidate) return;
+    const src = $(el).attr("src") ?? $(el).attr("data-src");
+    if (!src) return;
+    try {
+      candidate = new URL(src, baseUrl).toString();
+    } catch {
+      // invalid src — keep looking
+    }
+  });
+  if (candidate) return candidate;
+  return images.find((img) => /logo/i.test(img.alt))?.url ?? null;
 }
 
 function dedupeImages(images: ScrapedImage[]): ScrapedImage[] {
@@ -240,9 +350,12 @@ export async function scrapePage(url: string): Promise<ScrapedPage> {
   };
 
   const sitemapUrls = await fetchSitemapUrls(baseUrl).catch(() => []);
+  const brandColors = extractBrandColors($);
+  const logoUrl = detectLogoUrl($, baseUrl, images);
 
   // Strip script/style/noscript before computing the plain-text body extract
-  // (must happen after the JSON-LD pass above, which reads script tags).
+  // (must happen after the JSON-LD/brand-color/logo passes above, which read
+  // script and style content).
   $("script, style, noscript").remove();
   const fullText = cleanText($("body").text()).slice(0, 8000);
 
@@ -259,5 +372,7 @@ export async function scrapePage(url: string): Promise<ScrapedPage> {
     seo,
     sitemapUrls,
     fullText,
+    brandColors,
+    logoUrl,
   };
 }

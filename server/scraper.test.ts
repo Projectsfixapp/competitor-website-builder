@@ -151,4 +151,99 @@ describe("scrapePage", () => {
 
     expect(page.sitemapUrls).toEqual([]);
   });
+
+  it("falls back to alt-text matching 'logo' when no header/nav image exists", async () => {
+    safeFetchTextMock.mockImplementation(async (url: string) => {
+      if (url.includes("robots.txt") || url.includes("sitemap.xml")) throw new Error("not found");
+      return SAMPLE_HTML;
+    });
+
+    const page = await scrapePage("https://example.com/");
+
+    expect(page.logoUrl).toBe("https://cdn.example.com/logo.png");
+  });
+
+  it("prefers a header/nav image over an alt-text match elsewhere on the page", async () => {
+    const html = `<!DOCTYPE html><html><head><title>T</title></head><body>
+      <header><img src="/brand-logo.svg" alt="Firmenlogo"></header>
+      <img src="/unrelated-logo-shaped-icon.png" alt="logo decoration">
+      </body></html>`;
+    safeFetchTextMock.mockImplementation(async (url: string) => {
+      if (url.includes("robots.txt") || url.includes("sitemap.xml")) throw new Error("not found");
+      return html;
+    });
+
+    const page = await scrapePage("https://example.com/");
+
+    expect(page.logoUrl).toBe("https://example.com/brand-logo.svg");
+  });
+
+  it("returns null logoUrl when no candidate exists", async () => {
+    const html = `<!DOCTYPE html><html><head><title>T</title></head><body><img src="/random.jpg" alt="Baustelle"></body></html>`;
+    safeFetchTextMock.mockImplementation(async (url: string) => {
+      if (url.includes("robots.txt") || url.includes("sitemap.xml")) throw new Error("not found");
+      return html;
+    });
+
+    const page = await scrapePage("https://example.com/");
+
+    expect(page.logoUrl).toBeNull();
+  });
+
+  it("extracts the theme-color meta tag as the first brand color", async () => {
+    const html = `<!DOCTYPE html><html><head><title>T</title><meta name="theme-color" content="#1E88E5"></head><body><p>Hallo</p></body></html>`;
+    safeFetchTextMock.mockImplementation(async (url: string) => {
+      if (url.includes("robots.txt") || url.includes("sitemap.xml")) throw new Error("not found");
+      return html;
+    });
+
+    const page = await scrapePage("https://example.com/");
+
+    expect(page.brandColors[0]).toBe("#1e88e5");
+  });
+
+  it("extracts the most frequent vivid colors from inline styles and <style> blocks", async () => {
+    const html = `<!DOCTYPE html><html><head><title>T</title>
+      <style>.btn { background-color: #ff6600; } .btn2 { background-color: #ff6600; }</style>
+      </head><body>
+      <div style="color: #ff6600;">A</div>
+      <div style="color: #003366;">B</div>
+      </body></html>`;
+    safeFetchTextMock.mockImplementation(async (url: string) => {
+      if (url.includes("robots.txt") || url.includes("sitemap.xml")) throw new Error("not found");
+      return html;
+    });
+
+    const page = await scrapePage("https://example.com/");
+
+    expect(page.brandColors[0]).toBe("#ff6600"); // appears 3x vs. #003366's 1x
+    expect(page.brandColors).toContain("#003366");
+  });
+
+  it("excludes near-white, near-black, and grey colors from brandColors", async () => {
+    const html = `<!DOCTYPE html><html><head><title>T</title></head><body>
+      <div style="color: #ffffff; background: #000000; border-color: #888888;">text</div>
+      <div style="color: #cc3366;">accent</div>
+      </body></html>`;
+    safeFetchTextMock.mockImplementation(async (url: string) => {
+      if (url.includes("robots.txt") || url.includes("sitemap.xml")) throw new Error("not found");
+      return html;
+    });
+
+    const page = await scrapePage("https://example.com/");
+
+    expect(page.brandColors).toEqual(["#cc3366"]);
+  });
+
+  it("returns an empty brandColors array when nothing vivid is found", async () => {
+    const html = `<!DOCTYPE html><html><head><title>T</title></head><body><div style="color:#fff">x</div></body></html>`;
+    safeFetchTextMock.mockImplementation(async (url: string) => {
+      if (url.includes("robots.txt") || url.includes("sitemap.xml")) throw new Error("not found");
+      return html;
+    });
+
+    const page = await scrapePage("https://example.com/");
+
+    expect(page.brandColors).toEqual([]);
+  });
 });

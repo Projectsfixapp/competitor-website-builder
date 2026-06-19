@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { BACKGROUND_PRESETS, HEX_COLOR_PATTERN } from "@shared/const";
 import { validateUrlShape } from "./_core/ssrf";
 import {
   createProject,
@@ -57,12 +58,21 @@ export const appRouter = router({
       .input(
         z.object({
           name: z.string().min(1).max(255),
-          urls: z.array(z.string().url()).min(1).max(7),
+          urls: z
+            .array(z.object({ url: z.string().url(), isOwnSite: z.boolean().default(false) }))
+            .min(1)
+            .max(7)
+            .refine((urls) => urls.filter((u) => u.isOwnSite).length <= 1, {
+              message: "Nur eine URL kann als deine eigene Website markiert werden.",
+            }),
           llmProvider: z.enum(["manus", "gemini", "claude"]).default("manus"),
+          colorMode: z.enum(["manual", "extract"]).default("manual"),
+          backgroundColor: z.string().regex(HEX_COLOR_PATTERN).optional(),
+          accentColors: z.array(z.string().regex(HEX_COLOR_PATTERN)).min(1).max(3).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        for (const url of input.urls) {
+        for (const { url } of input.urls) {
           try {
             validateUrlShape(url);
           } catch (err) {
@@ -72,7 +82,27 @@ export const appRouter = router({
             });
           }
         }
-        const projectId = await createProject(ctx.user.id, input.name, input.llmProvider);
+
+        const hasOwnSite = input.urls.some((u) => u.isOwnSite);
+        if (input.colorMode === "extract" && !hasOwnSite) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Markiere eine URL als deine eigene Website, um Farben von dort zu übernehmen.",
+          });
+        }
+        if (
+          input.colorMode === "manual" &&
+          input.backgroundColor &&
+          !BACKGROUND_PRESETS.some((p) => p.hex.toLowerCase() === input.backgroundColor!.toLowerCase())
+        ) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Ungültige Hintergrundfarbe." });
+        }
+
+        const projectId = await createProject(ctx.user.id, input.name, input.llmProvider, {
+          colorMode: input.colorMode,
+          backgroundColor: input.colorMode === "manual" ? input.backgroundColor ?? null : null,
+          accentColors: input.colorMode === "manual" ? input.accentColors ?? null : null,
+        });
         await insertCompetitorUrls(projectId, input.urls);
         return { projectId };
       }),
@@ -109,7 +139,7 @@ export type AppRouter = typeof appRouter;
 import type { Express, Request, Response } from "express";
 import { sdk } from "./_core/sdk";
 import { scrapePage } from "./scraper";
-import { analyzeCompetitors, generateWebsite } from "./pipeline";
+import { analyzeCompetitors, generateWebsite, resolveTheme } from "./pipeline";
 
 export function registerAnalysisRoute(app: Express) {
   app.get("/api/analyze/:projectId", async (req: Request, res: Response) => {
@@ -207,7 +237,18 @@ export function registerAnalysisRoute(app: Express) {
       await updateProjectStatus(projectId, "generating");
       send("status", { step: "generating", message: `Generiere Website mit ${provider === "gemini" ? "Gemini" : provider === "claude" ? "Claude" : "Manus"}…`, progress: 70 });
 
-      const websiteData = await generateWebsite(insights, scrapedPages, provider);
+      const ownSiteUrl = urlRows.find((r) => r.isOwnSite)?.url ?? null;
+      const theme = resolveTheme(
+        {
+          colorMode: project.colorMode ?? "manual",
+          backgroundColor: project.backgroundColor ?? null,
+          accentColors: project.accentColors ?? null,
+        },
+        scrapedPages,
+        ownSiteUrl
+      );
+
+      const websiteData = await generateWebsite(insights, scrapedPages, provider, theme);
       await upsertGeneratedWebsite(projectId, websiteData.htmlContent, websiteData.configJson);
       await updateProjectStatus(projectId, "done");
 

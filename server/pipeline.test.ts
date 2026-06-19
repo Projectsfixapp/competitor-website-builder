@@ -11,6 +11,7 @@ import {
   computeSeoSignals,
   computeStructureSignals,
   extractConfigJson,
+  resolveTheme,
   scoreSeoSignals,
   scoreStructureSignals,
 } from "./pipeline";
@@ -39,6 +40,8 @@ function makePage(overrides: Partial<ScrapedPage> = {}): ScrapedPage {
     },
     sitemapUrls: [],
     fullText: "",
+    brandColors: [],
+    logoUrl: null,
     ...overrides,
   };
 }
@@ -238,5 +241,67 @@ describe("analyzeCompetitors", () => {
 
     await expect(analyzeCompetitors([makePage()], "manus")).rejects.toThrow(/valides JSON/);
     expect(callLLMMock).toHaveBeenCalledTimes(2); // exhausted both attempts, didn't retry forever
+  });
+});
+
+describe("resolveTheme", () => {
+  it("uses the project's manual background/accent colors when colorMode is manual", () => {
+    const theme = resolveTheme(
+      { colorMode: "manual", backgroundColor: "#FFFFFF", accentColors: ["#112233"] },
+      [makePage({ url: "https://own.example" })],
+      null
+    );
+    expect(theme).toEqual({ backgroundColor: "#FFFFFF", accentColors: ["#112233"], logoUrl: null });
+  });
+
+  it("falls back to defaults when manual mode has no stored colors", () => {
+    const theme = resolveTheme({ colorMode: "manual", backgroundColor: null, accentColors: null }, [], null);
+    expect(theme.backgroundColor).toBe("#FAFAF9");
+    expect(theme.accentColors).toEqual(["#C8A96E"]);
+  });
+
+  it("extracts brand colors from the marked own-site page when colorMode is extract", () => {
+    const pages = [
+      makePage({ url: "https://competitor.example", brandColors: ["#999999"] }),
+      makePage({ url: "https://own.example", brandColors: ["#cc3366", "#003366"], logoUrl: "https://own.example/logo.png" }),
+    ];
+    const theme = resolveTheme(
+      { colorMode: "extract", backgroundColor: null, accentColors: null },
+      pages,
+      "https://own.example"
+    );
+    expect(theme.accentColors).toEqual(["#cc3366", "#003366"]);
+    expect(theme.logoUrl).toBe("https://own.example/logo.png");
+    expect(theme.backgroundColor).toBe("#FAFAF9"); // background never extracted, always the safe light default
+  });
+
+  it("falls back to default accent colors when extraction finds nothing on the own site", () => {
+    const pages = [makePage({ url: "https://own.example", brandColors: [] })];
+    const theme = resolveTheme(
+      { colorMode: "extract", backgroundColor: null, accentColors: null },
+      pages,
+      "https://own.example"
+    );
+    expect(theme.accentColors).toEqual(["#C8A96E"]);
+  });
+
+  it("still picks up the logo from the own site even in manual color mode", () => {
+    const pages = [makePage({ url: "https://own.example", logoUrl: "https://own.example/logo.svg" })];
+    const theme = resolveTheme(
+      { colorMode: "manual", backgroundColor: "#FFFFFF", accentColors: ["#112233"] },
+      pages,
+      "https://own.example"
+    );
+    expect(theme.logoUrl).toBe("https://own.example/logo.svg");
+    expect(theme.accentColors).toEqual(["#112233"]); // manual colors unaffected by logo lookup
+  });
+
+  it("has no logo when no own-site URL is given", () => {
+    const theme = resolveTheme(
+      { colorMode: "manual", backgroundColor: null, accentColors: null },
+      [makePage({ url: "https://competitor.example", logoUrl: "https://competitor.example/logo.png" })],
+      null
+    );
+    expect(theme.logoUrl).toBeNull();
   });
 });
