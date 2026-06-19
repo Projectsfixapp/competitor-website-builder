@@ -19,7 +19,11 @@ import {
 } from "./db";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
-import { MAX_ATTACHED_IMAGE_DATA_URL_LENGTH, reviseWebsiteViaChat, validateAttachedImage } from "./pipeline";
+import {
+  MAX_ATTACHED_IMAGE_DATA_URL_LENGTH,
+  reviseWebsiteViaChat,
+  validateAttachedImage,
+} from "./pipeline";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 
@@ -27,7 +31,7 @@ export const appRouter = router({
   system: systemRouter,
 
   auth: router({
-    me: publicProcedure.query((opts) => opts.ctx.user),
+    me: publicProcedure.query(opts => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -60,16 +64,26 @@ export const appRouter = router({
         z.object({
           name: z.string().min(1).max(255),
           urls: z
-            .array(z.object({ url: z.string().url(), isOwnSite: z.boolean().default(false) }))
+            .array(
+              z.object({
+                url: z.string().url(),
+                isOwnSite: z.boolean().default(false),
+              })
+            )
             .min(1)
             .max(7)
-            .refine((urls) => urls.filter((u) => u.isOwnSite).length <= 1, {
-              message: "Nur eine URL kann als deine eigene Website markiert werden.",
+            .refine(urls => urls.filter(u => u.isOwnSite).length <= 1, {
+              message:
+                "Nur eine URL kann als deine eigene Website markiert werden.",
             }),
           llmProvider: z.enum(["manus", "gemini", "claude"]).default("manus"),
           colorMode: z.enum(["manual", "extract"]).default("manual"),
           backgroundColor: z.string().regex(HEX_COLOR_PATTERN).optional(),
-          accentColors: z.array(z.string().regex(HEX_COLOR_PATTERN)).min(1).max(3).optional(),
+          accentColors: z
+            .array(z.string().regex(HEX_COLOR_PATTERN))
+            .min(1)
+            .max(3)
+            .optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -79,31 +93,49 @@ export const appRouter = router({
           } catch (err) {
             throw new TRPCError({
               code: "BAD_REQUEST",
-              message: err instanceof Error ? err.message : `Ungültige URL: ${url}`,
+              message:
+                err instanceof Error ? err.message : `Ungültige URL: ${url}`,
             });
           }
         }
 
-        const hasOwnSite = input.urls.some((u) => u.isOwnSite);
+        const hasOwnSite = input.urls.some(u => u.isOwnSite);
         if (input.colorMode === "extract" && !hasOwnSite) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Markiere eine URL als deine eigene Website, um Farben von dort zu übernehmen.",
+            message:
+              "Markiere eine URL als deine eigene Website, um Farben von dort zu übernehmen.",
           });
         }
         if (
           input.colorMode === "manual" &&
           input.backgroundColor &&
-          !BACKGROUND_PRESETS.some((p) => p.hex.toLowerCase() === input.backgroundColor!.toLowerCase())
+          !BACKGROUND_PRESETS.some(
+            p => p.hex.toLowerCase() === input.backgroundColor!.toLowerCase()
+          )
         ) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Ungültige Hintergrundfarbe." });
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Ungültige Hintergrundfarbe.",
+          });
         }
 
-        const projectId = await createProject(ctx.user.id, input.name, input.llmProvider, {
-          colorMode: input.colorMode,
-          backgroundColor: input.colorMode === "manual" ? input.backgroundColor ?? null : null,
-          accentColors: input.colorMode === "manual" ? input.accentColors ?? null : null,
-        });
+        const projectId = await createProject(
+          ctx.user.id,
+          input.name,
+          input.llmProvider,
+          {
+            colorMode: input.colorMode,
+            backgroundColor:
+              input.colorMode === "manual"
+                ? (input.backgroundColor ?? null)
+                : null,
+            accentColors:
+              input.colorMode === "manual"
+                ? (input.accentColors ?? null)
+                : null,
+          }
+        );
         await insertCompetitorUrls(projectId, input.urls);
         return { projectId };
       }),
@@ -151,7 +183,10 @@ export const appRouter = router({
         }
         const website = await getGeneratedWebsite(input.projectId);
         if (!website) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Für dieses Projekt wurde noch keine Website generiert." });
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Für dieses Projekt wurde noch keine Website generiert.",
+          });
         }
         if (input.attachedImage) {
           try {
@@ -164,14 +199,21 @@ export const appRouter = router({
           }
         }
 
-        const provider = (project.llmProvider ?? "manus") as "manus" | "gemini" | "claude";
+        const provider = (project.llmProvider ?? "manus") as
+          | "manus"
+          | "gemini"
+          | "claude";
         const result = await reviseWebsiteViaChat(
           website.htmlContent,
           input.message,
           provider,
           input.attachedImage
         );
-        await upsertGeneratedWebsite(input.projectId, result.htmlContent, result.configJson);
+        await upsertGeneratedWebsite(
+          input.projectId,
+          result.htmlContent,
+          result.configJson
+        );
 
         return { reply: result.reply, htmlContent: result.htmlContent };
       }),
@@ -188,125 +230,174 @@ import { sdk } from "./_core/sdk";
 import { scrapePage } from "./scraper";
 import { analyzeCompetitors, generateWebsite, resolveTheme } from "./pipeline";
 
-export function registerAnalysisRoute(app: Express) {
-  app.get("/api/analyze/:projectId", async (req: Request, res: Response) => {
-    // Auth check
-    const cookieHeader = req.headers.cookie ?? "";
-    const cookies = Object.fromEntries(
-      cookieHeader.split(";").map((c) => {
-        const [k, ...v] = c.trim().split("=");
-        return [k?.trim() ?? "", v.join("=")];
-      })
-    );
-    const sessionToken = cookies[COOKIE_NAME];
-    if (!sessionToken) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
+/** Extracted from registerAnalysisRoute so it can be unit/e2e-tested directly with mock req/res, without spinning up a real Express server. */
+export async function handleAnalyzeRequest(
+  req: Request,
+  res: Response
+): Promise<void> {
+  // Auth check
+  const cookieHeader = req.headers.cookie ?? "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split(";").map(c => {
+      const [k, ...v] = c.trim().split("=");
+      return [k?.trim() ?? "", v.join("=")];
+    })
+  );
+  const sessionToken = cookies[COOKIE_NAME];
+  if (!sessionToken) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
 
-    let userId: number;
-    try {
-      const user = await sdk.authenticateRequest(req);
-      if (!user) throw new Error("No user");
-      userId = user.id;
-    } catch {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
+  let userId: number;
+  try {
+    const user = await sdk.authenticateRequest(req);
+    if (!user) throw new Error("No user");
+    userId = user.id;
+  } catch {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
 
-    const projectId = parseInt(req.params.projectId ?? "0", 10);
-    if (!projectId) {
-      res.status(400).json({ error: "Invalid projectId" });
-      return;
-    }
+  const projectId = parseInt(req.params.projectId ?? "0", 10);
+  if (!projectId) {
+    res.status(400).json({ error: "Invalid projectId" });
+    return;
+  }
 
-    const project = await getProjectById(projectId);
-    if (!project || project.userId !== userId) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
+  const project = await getProjectById(projectId);
+  if (!project || project.userId !== userId) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
 
-    // SSE headers
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
-    res.flushHeaders();
+  // SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
 
-    const send = (event: string, data: unknown) => {
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    };
+  const send = (event: string, data: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
 
-    try {
-      // ── Step 1: Scraping ──────────────────────────────────────────────────
-      await updateProjectStatus(projectId, "scraping");
-      const urlRows = await getCompetitorUrlsByProject(projectId);
+  try {
+    // ── Step 1: Scraping ──────────────────────────────────────────────────
+    await updateProjectStatus(projectId, "scraping");
+    const urlRows = await getCompetitorUrlsByProject(projectId);
 
-      send("status", { step: "scraping", message: "Starte Scraping der Mitbewerber-URLs…", progress: 5 });
+    send("status", {
+      step: "scraping",
+      message: "Starte Scraping der Mitbewerber-URLs…",
+      progress: 5,
+    });
 
-      const scrapedPages = [];
-      for (let i = 0; i < urlRows.length; i++) {
-        const row = urlRows[i];
-        if (!row) continue;
-        send("status", {
-          step: "scraping",
-          message: `Scrappe ${row.url}…`,
-          progress: 5 + Math.round(((i + 1) / urlRows.length) * 30),
+    const scrapedPages = [];
+    for (let i = 0; i < urlRows.length; i++) {
+      const row = urlRows[i];
+      if (!row) continue;
+      send("status", {
+        step: "scraping",
+        message: `Scrappe ${row.url}…`,
+        progress: 5 + Math.round(((i + 1) / urlRows.length) * 30),
+      });
+      try {
+        const page = await scrapePage(row.url);
+        await updateCompetitorUrlScraped(row.id, page.title, page.fullText);
+        scrapedPages.push(page);
+        send("scraped", {
+          url: row.url,
+          title: page.title,
+          headlines: page.headlines.slice(0, 3),
         });
-        try {
-          const page = await scrapePage(row.url);
-          await updateCompetitorUrlScraped(row.id, page.title, page.fullText);
-          scrapedPages.push(page);
-          send("scraped", { url: row.url, title: page.title, headlines: page.headlines.slice(0, 3) });
-        } catch (err) {
-          send("warning", { url: row.url, message: `Konnte nicht gescrapt werden: ${String(err)}` });
-        }
+      } catch (err) {
+        send("warning", {
+          url: row.url,
+          message: `Konnte nicht gescrapt werden: ${String(err)}`,
+        });
       }
-
-      if (scrapedPages.length === 0) {
-        throw new Error("Keine URLs konnten gescrapt werden.");
-      }
-
-      // ── Step 2: Analysis ──────────────────────────────────────────────────
-      await updateProjectStatus(projectId, "analyzing");
-      send("status", { step: "analyzing", message: "Analysiere Inhalte mit KI…", progress: 40 });
-
-      const provider = (project.llmProvider ?? "manus") as "manus" | "gemini" | "claude";
-      send("status", { step: "analyzing", message: `Analysiere mit ${provider === "gemini" ? "Gemini" : provider === "claude" ? "Claude" : "Manus"}…`, progress: 42 });
-
-      const insights = await analyzeCompetitors(scrapedPages, provider);
-      await upsertAnalysisResult(projectId, insights);
-
-      send("analysis", { insights });
-      send("status", { step: "analyzing", message: "Analyse abgeschlossen.", progress: 65 });
-
-      // ── Step 3: Generation ────────────────────────────────────────────────
-      await updateProjectStatus(projectId, "generating");
-      send("status", { step: "generating", message: `Generiere Website mit ${provider === "gemini" ? "Gemini" : provider === "claude" ? "Claude" : "Manus"}…`, progress: 70 });
-
-      const ownSiteUrl = urlRows.find((r) => r.isOwnSite)?.url ?? null;
-      const theme = resolveTheme(
-        {
-          colorMode: project.colorMode ?? "manual",
-          backgroundColor: project.backgroundColor ?? null,
-          accentColors: project.accentColors ?? null,
-        },
-        scrapedPages,
-        ownSiteUrl
-      );
-
-      const websiteData = await generateWebsite(insights, scrapedPages, provider, theme);
-      await upsertGeneratedWebsite(projectId, websiteData.htmlContent, websiteData.configJson);
-      await updateProjectStatus(projectId, "done");
-
-      send("status", { step: "done", message: "Website erfolgreich generiert!", progress: 100 });
-      send("done", { projectId });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      await updateProjectStatus(projectId, "error", message);
-      send("error", { message });
-    } finally {
-      res.end();
     }
-  });
+
+    if (scrapedPages.length === 0) {
+      throw new Error("Keine URLs konnten gescrapt werden.");
+    }
+
+    // ── Step 2: Analysis ──────────────────────────────────────────────────
+    await updateProjectStatus(projectId, "analyzing");
+    send("status", {
+      step: "analyzing",
+      message: "Analysiere Inhalte mit KI…",
+      progress: 40,
+    });
+
+    const provider = (project.llmProvider ?? "manus") as
+      | "manus"
+      | "gemini"
+      | "claude";
+    send("status", {
+      step: "analyzing",
+      message: `Analysiere mit ${provider === "gemini" ? "Gemini" : provider === "claude" ? "Claude" : "Manus"}…`,
+      progress: 42,
+    });
+
+    const insights = await analyzeCompetitors(scrapedPages, provider);
+    await upsertAnalysisResult(projectId, insights);
+
+    send("analysis", { insights });
+    send("status", {
+      step: "analyzing",
+      message: "Analyse abgeschlossen.",
+      progress: 65,
+    });
+
+    // ── Step 3: Generation ────────────────────────────────────────────────
+    await updateProjectStatus(projectId, "generating");
+    send("status", {
+      step: "generating",
+      message: `Generiere Website mit ${provider === "gemini" ? "Gemini" : provider === "claude" ? "Claude" : "Manus"}…`,
+      progress: 70,
+    });
+
+    const ownSiteUrl = urlRows.find(r => r.isOwnSite)?.url ?? null;
+    const theme = resolveTheme(
+      {
+        colorMode: project.colorMode ?? "manual",
+        backgroundColor: project.backgroundColor ?? null,
+        accentColors: project.accentColors ?? null,
+      },
+      scrapedPages,
+      ownSiteUrl
+    );
+
+    const websiteData = await generateWebsite(
+      insights,
+      scrapedPages,
+      provider,
+      theme
+    );
+    await upsertGeneratedWebsite(
+      projectId,
+      websiteData.htmlContent,
+      websiteData.configJson
+    );
+    await updateProjectStatus(projectId, "done");
+
+    send("status", {
+      step: "done",
+      message: "Website erfolgreich generiert!",
+      progress: 100,
+    });
+    send("done", { projectId });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await updateProjectStatus(projectId, "error", message);
+    send("error", { message });
+  } finally {
+    res.end();
+  }
+}
+
+export function registerAnalysisRoute(app: Express) {
+  app.get("/api/analyze/:projectId", handleAnalyzeRequest);
 }
