@@ -9,8 +9,13 @@ type UseAuthOptions = {
 };
 
 export function useAuth(options?: UseAuthOptions) {
-  const { redirectOnUnauthenticated = false, redirectPath = getLoginUrl() } =
-    options ?? {};
+  // redirectPath is intentionally NOT defaulted to getLoginUrl() here: a
+  // default parameter expression runs on every call, and useAuth() is called
+  // on every page (incl. ones that never redirect) — if OAuth env vars are
+  // missing/misconfigured, getLoginUrl() throws and crashes the whole app on
+  // first render. Resolve it lazily, only when a redirect is actually about
+  // to happen, in the effect below.
+  const { redirectOnUnauthenticated = false, redirectPath } = options ?? {};
   const utils = trpc.useUtils();
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
@@ -65,9 +70,17 @@ export function useAuth(options?: UseAuthOptions) {
     if (meQuery.isLoading || logoutMutation.isPending) return;
     if (state.user) return;
     if (typeof window === "undefined") return;
-    if (window.location.pathname === redirectPath) return;
 
-    window.location.href = redirectPath
+    let target: string;
+    try {
+      target = redirectPath ?? getLoginUrl();
+    } catch (error) {
+      console.error("[useAuth] Konnte Login-URL nicht ermitteln (OAuth env vars fehlen?):", error);
+      return;
+    }
+    if (window.location.pathname === target) return;
+
+    window.location.href = target;
   }, [
     redirectOnUnauthenticated,
     redirectPath,
