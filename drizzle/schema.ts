@@ -1,6 +1,7 @@
 import {
   int,
   json,
+  longtext,
   mysqlEnum,
   mysqlTable,
   text,
@@ -84,7 +85,10 @@ export type InsertAnalysisResult = typeof analysisResults.$inferInsert;
 export const generatedWebsites = mysqlTable("generated_websites", {
   id: int("id").autoincrement().primaryKey(),
   projectId: int("projectId").notNull().unique(),
-  htmlContent: text("htmlContent").notNull(),
+  // longtext, not text: a full HTML5 doc with inline CSS/JS (and later inline
+  // base64 images) easily exceeds the 64KB TEXT limit, which MySQL truncates
+  // silently rather than erroring.
+  htmlContent: longtext("htmlContent").notNull(),
   configJson: json("configJson").$type<Record<string, unknown>>(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

@@ -1,0 +1,1 @@
+ALTER TABLE `generated_websites` MODIFY COLUMN `htmlContent` longtext NOT NULL;
