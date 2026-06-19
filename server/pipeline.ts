@@ -3,6 +3,7 @@
  * Extracts insights from scraped pages and generates a superior website.
  */
 
+import JSON5 from "json5";
 import { callLLM, type LLMProvider } from "./llmAdapter";
 import type { ScrapedPage } from "./scraper";
 
@@ -187,17 +188,24 @@ Wichtig:
     htmlContent = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Generierte Website</title></head><body>${htmlContent}</body></html>`;
   }
 
-  // Extract config from HTML if present
-  const configMatch = typeof htmlContent === "string" ? htmlContent.match(/const\s+CONFIG\s*=\s*(\{[\s\S]*?\});/) : null;
-  let configJson: Record<string, unknown> = {};
-  if (configMatch) {
-    try {
-      // Safe eval via Function constructor
-      configJson = new Function(`return ${configMatch[1]}`)() as Record<string, unknown>;
-    } catch {
-      configJson = {};
-    }
-  }
+  const configJson = extractConfigJson(htmlContent);
 
   return { htmlContent, configJson };
+}
+
+/**
+ * Pulls the `const CONFIG = {...}` object literal out of generated HTML.
+ * Uses JSON5 (tolerates unquoted keys, single quotes, trailing commas) instead
+ * of `new Function()`/`eval` — the matched text flows from LLM output, which
+ * is itself influenced by scraped competitor content and (later) chat prompts,
+ * so it must never be executed as code.
+ */
+export function extractConfigJson(html: string): Record<string, unknown> {
+  const configMatch = html.match(/const\s+CONFIG\s*=\s*(\{[\s\S]*?\});/);
+  if (!configMatch) return {};
+  try {
+    return JSON5.parse(configMatch[1]!) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
