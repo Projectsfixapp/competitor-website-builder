@@ -526,3 +526,106 @@ export function extractConfigJson(html: string): Record<string, unknown> {
     return {};
   }
 }
+
+// ─── Chat-Based Revisions ───────────────────────────────────────────────────────
+
+const REVISION_DELIMITER = "---HTML---";
+const UPLOADED_IMAGE_TOKEN = "__UPLOADED_IMAGE__";
+export const MAX_ATTACHED_IMAGE_DATA_URL_LENGTH = 8 * 1024 * 1024; // ~6MB binary as base64
+
+export interface AttachedImage {
+  dataUrl: string;
+  mimeType: string;
+}
+
+export interface ChatRevisionResult {
+  reply: string;
+  htmlContent: string;
+  configJson: Record<string, unknown>;
+}
+
+export function validateAttachedImage(image: AttachedImage): void {
+  if (!image.mimeType.startsWith("image/")) {
+    throw new Error("Nur Bilddateien können hochgeladen werden.");
+  }
+  if (!image.dataUrl.startsWith("data:image/")) {
+    throw new Error("Ungültiges Bildformat.");
+  }
+  if (image.dataUrl.length > MAX_ATTACHED_IMAGE_DATA_URL_LENGTH) {
+    throw new Error("Das Bild ist zu groß (max. ca. 6 MB).");
+  }
+}
+
+/**
+ * Applies a natural-language change request to an existing generated website.
+ * Asks the LLM to return the full updated HTML (not a diff/patch) — simpler
+ * and more reliable than patch application, and consistent with how the
+ * initial generateWebsite() output is produced and stored.
+ *
+ * An uploaded image is never sent to the LLM as a giant inline base64 string
+ * (wasteful, and LLMs reliably mangle/truncate very long literal strings) —
+ * the LLM is told to reference a short placeholder token instead, which is
+ * substituted with the real data URL server-side afterwards.
+ *
+ * Security note: this output is only ever rendered through the sandboxed
+ * editor iframe (ProjectPreview.tsx, sandbox="allow-same-origin" without
+ * allow-scripts) — that output isolation is the actual defense against a
+ * malicious change request ("add this tracking script"), not anything this
+ * prompt says. No prompt wording reliably stops that; trying to filter it
+ * here would be solving it at the wrong layer.
+ */
+export async function reviseWebsiteViaChat(
+  currentHtml: string,
+  message: string,
+  provider: LLMProvider = "manus",
+  attachedImage: AttachedImage | null = null
+): Promise<ChatRevisionResult> {
+  const imageInstruction = attachedImage
+    ? `\n\nDer Nutzer hat ein Bild hochgeladen. Verwende GENAU diesen Platzhalter-String als img-src (oder background-image-URL) an der Stelle, die der Nutzer meint — ersetze ihn NICHT durch eine andere URL, er wird automatisch durch das echte Bild ersetzt: ${UPLOADED_IMAGE_TOKEN}`
+    : "";
+
+  const raw = await callLLM({
+    provider,
+    responseFormat: "text",
+    messages: [
+      {
+        role: "system",
+        content: `Du bearbeitest eine bestehende, von dir generierte Website anhand eines Änderungswunsches des Nutzers.
+
+REGELN:
+- Ändere NUR das, was der Nutzer angefordert hat. Struktur, Texte, Bilder und das CONFIG-Objekt bleiben unverändert, wo nicht explizit anders gewünscht.
+- contenteditable="true" auf Textelementen bleibt erhalten.
+- Erfinde KEINE neuen Bild-URLs (auch keine Unsplash-Links) — nutze nur bereits im HTML vorhandene Bild-URLs oder den Upload-Platzhalter.
+- Gib deine Antwort in GENAU diesem Format zurück, sonst nichts:
+REPLY: <ein kurzer, freundlicher Satz auf Deutsch, was du geändert hast>
+${REVISION_DELIMITER}
+<das vollständige, aktualisierte HTML-Dokument>`,
+      },
+      {
+        role: "user",
+        content: `Aktuelles HTML:\n\n${currentHtml}\n\nÄnderungswunsch: ${message}${imageInstruction}`,
+      },
+    ],
+  });
+
+  const delimiterIndex = raw.indexOf(REVISION_DELIMITER);
+  let reply: string;
+  let htmlContent: string;
+  if (delimiterIndex === -1) {
+    reply = "Änderung übernommen.";
+    htmlContent = raw;
+  } else {
+    reply = raw.slice(0, delimiterIndex).replace(/^REPLY:\s*/i, "").trim() || "Änderung übernommen.";
+    htmlContent = raw.slice(delimiterIndex + REVISION_DELIMITER.length).trim();
+  }
+
+  if (!htmlContent.includes("<!DOCTYPE") && !htmlContent.includes("<html")) {
+    // Malformed output — keep the working previous version rather than store broken HTML.
+    htmlContent = currentHtml;
+    reply = "Die Änderung konnte nicht sauber angewendet werden. Bitte versuche es mit einer anderen Formulierung.";
+  } else if (attachedImage) {
+    htmlContent = htmlContent.split(UPLOADED_IMAGE_TOKEN).join(attachedImage.dataUrl);
+  }
+
+  return { reply, htmlContent, configJson: extractConfigJson(htmlContent) };
+}

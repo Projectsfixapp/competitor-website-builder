@@ -18,9 +18,12 @@ import {
   computeStructureSignals,
   extractConfigJson,
   generateWebsite,
+  MAX_ATTACHED_IMAGE_DATA_URL_LENGTH,
   resolveTheme,
+  reviseWebsiteViaChat,
   scoreSeoSignals,
   scoreStructureSignals,
+  validateAttachedImage,
 } from "./pipeline";
 
 function makeImage(overrides: Partial<ScrapedImage> = {}): ScrapedImage {
@@ -407,5 +410,80 @@ describe("generateWebsite image sourcing", () => {
     const systemPrompt = callLLMMock.mock.calls[0]![0].messages[0].content as string;
     expect(systemPrompt).toContain("keine echten Fotos vor");
     expect(systemPrompt).not.toContain("Unsplash-URLs mit passenden Suchbegriffen");
+  });
+});
+
+describe("validateAttachedImage", () => {
+  it("accepts a small, valid image data URL", () => {
+    expect(() => validateAttachedImage({ dataUrl: "data:image/png;base64,AAAA", mimeType: "image/png" })).not.toThrow();
+  });
+
+  it("rejects a non-image mime type", () => {
+    expect(() =>
+      validateAttachedImage({ dataUrl: "data:application/pdf;base64,AAAA", mimeType: "application/pdf" })
+    ).toThrow(/Bilddateien/);
+  });
+
+  it("rejects a data URL that doesn't actually look like an image", () => {
+    expect(() => validateAttachedImage({ dataUrl: "data:text/html,<script>", mimeType: "image/png" })).toThrow(
+      /Ungültiges Bildformat/
+    );
+  });
+
+  it("rejects an oversized image", () => {
+    const huge = "data:image/png;base64," + "A".repeat(MAX_ATTACHED_IMAGE_DATA_URL_LENGTH + 1);
+    expect(() => validateAttachedImage({ dataUrl: huge, mimeType: "image/png" })).toThrow(/zu groß/);
+  });
+});
+
+describe("reviseWebsiteViaChat", () => {
+  beforeEach(() => {
+    callLLMMock.mockReset();
+  });
+
+  const currentHtml = `<!DOCTYPE html><html><body><button style="color:blue">Click</button></body></html>`;
+
+  it("parses the REPLY/---HTML--- format and persists the new HTML", async () => {
+    callLLMMock.mockResolvedValue(
+      `REPLY: Ich habe den Button rot gemacht.\n---HTML---\n<!DOCTYPE html><html><body><button style="color:red">Click</button></body></html>`
+    );
+
+    const result = await reviseWebsiteViaChat(currentHtml, "Mach den Button rot", "manus");
+
+    expect(result.reply).toBe("Ich habe den Button rot gemacht.");
+    expect(result.htmlContent).toContain('color:red');
+  });
+
+  it("falls back to a generic reply when the LLM omits the REPLY line/delimiter", async () => {
+    callLLMMock.mockResolvedValue(`<!DOCTYPE html><html><body>Updated</body></html>`);
+
+    const result = await reviseWebsiteViaChat(currentHtml, "Mach irgendwas", "manus");
+
+    expect(result.reply).toBe("Änderung übernommen.");
+    expect(result.htmlContent).toContain("Updated");
+  });
+
+  it("keeps the previous working HTML and reports failure when the LLM returns non-HTML garbage", async () => {
+    callLLMMock.mockResolvedValue(`REPLY: Erledigt.\n---HTML---\nIch kann das nicht tun, sorry.`);
+
+    const result = await reviseWebsiteViaChat(currentHtml, "Etwas Unmögliches", "manus");
+
+    expect(result.htmlContent).toBe(currentHtml); // unchanged, not corrupted
+    expect(result.reply).toMatch(/nicht sauber angewendet/);
+  });
+
+  it("substitutes the upload placeholder token with the real data URL without ever sending the data URL to the LLM", async () => {
+    callLLMMock.mockResolvedValue(
+      `REPLY: Bild eingesetzt.\n---HTML---\n<!DOCTYPE html><html><body><img src="__UPLOADED_IMAGE__"></body></html>`
+    );
+    const attachedImage = { dataUrl: "data:image/png;base64,AAAA", mimeType: "image/png" };
+
+    const result = await reviseWebsiteViaChat(currentHtml, "Nutze das hochgeladene Bild im Hero", "manus", attachedImage);
+
+    expect(result.htmlContent).toContain('src="data:image/png;base64,AAAA"');
+    expect(result.htmlContent).not.toContain("__UPLOADED_IMAGE__");
+    const userPrompt = callLLMMock.mock.calls[0]![0].messages[1].content as string;
+    expect(userPrompt).not.toContain("base64,AAAA"); // the prompt only got the placeholder, not the real image bytes
+    expect(userPrompt).toContain("__UPLOADED_IMAGE__");
   });
 });

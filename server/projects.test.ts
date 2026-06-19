@@ -60,6 +60,20 @@ vi.mock("./db", () => ({
   getUserByOpenId: vi.fn().mockResolvedValue(undefined),
 }));
 
+// ─── Mock chat-revision pipeline (real LLM call, mocked at the function boundary) ──
+const reviseWebsiteViaChatMock = vi.fn().mockResolvedValue({
+  reply: "Geändert.",
+  htmlContent: "<html><body>Revised</body></html>",
+  configJson: {},
+});
+vi.mock("./pipeline", async () => {
+  const actual = await vi.importActual<typeof import("./pipeline")>("./pipeline");
+  return {
+    ...actual,
+    reviseWebsiteViaChat: (...args: unknown[]) => reviseWebsiteViaChatMock(...args),
+  };
+});
+
 // ─── Test Context ─────────────────────────────────────────────────────────────
 function createAuthContext(): TrpcContext {
   return {
@@ -249,6 +263,59 @@ describe("projects.updateHtml", () => {
       htmlContent: "<html><body>Updated</body></html>",
     });
     expect(result).toEqual({ success: true });
+  });
+});
+
+describe("projects.reviseViaChat", () => {
+  beforeEach(() => {
+    reviseWebsiteViaChatMock.mockClear();
+  });
+
+  it("ruft die Revision-Pipeline mit dem aktuellen HTML auf und speichert das Ergebnis", async () => {
+    const ctx = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.projects.reviseViaChat({
+      projectId: 1,
+      message: "Mach den Button rot",
+    });
+    expect(result).toEqual({ reply: "Geändert.", htmlContent: "<html><body>Revised</body></html>" });
+    expect(reviseWebsiteViaChatMock).toHaveBeenCalledWith(
+      "<html><body>Test</body></html>",
+      "Mach den Button rot",
+      "manus",
+      null
+    );
+  });
+
+  it("lehnt eine zu große Bilddatei ab, ohne die Revision-Pipeline aufzurufen", async () => {
+    const ctx = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const huge = "data:image/png;base64," + "A".repeat(9 * 1024 * 1024);
+    await expect(
+      caller.projects.reviseViaChat({
+        projectId: 1,
+        message: "Nutze das Bild",
+        attachedImage: { dataUrl: huge, mimeType: "image/png" },
+      })
+    ).rejects.toThrow();
+    expect(reviseWebsiteViaChatMock).not.toHaveBeenCalled();
+  });
+
+  it("lehnt fremde Projekte ab", async () => {
+    const ctx = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const { getProjectById } = await import("./db");
+    vi.mocked(getProjectById).mockResolvedValueOnce({
+      id: 99,
+      userId: 999,
+      name: "Fremdes Projekt",
+      status: "done",
+      llmProvider: "manus",
+      errorMessage: null,
+      createdAt: new Date("2026-01-01"),
+      updatedAt: new Date("2026-01-01"),
+    } as any);
+    await expect(caller.projects.reviseViaChat({ projectId: 99, message: "Hallo" })).rejects.toThrow();
   });
 });
 

@@ -19,6 +19,7 @@ import {
 } from "./db";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { MAX_ATTACHED_IMAGE_DATA_URL_LENGTH, reviseWebsiteViaChat, validateAttachedImage } from "./pipeline";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 
@@ -127,6 +128,52 @@ export const appRouter = router({
         }
         await updateGeneratedWebsiteHtml(input.projectId, input.htmlContent);
         return { success: true };
+      }),
+
+    reviseViaChat: protectedProcedure
+      .input(
+        z.object({
+          projectId: z.number(),
+          message: z.string().min(1).max(2000),
+          attachedImage: z
+            .object({
+              dataUrl: z.string().max(MAX_ATTACHED_IMAGE_DATA_URL_LENGTH),
+              mimeType: z.string(),
+            })
+            .nullable()
+            .default(null),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProjectById(input.projectId);
+        if (!project || project.userId !== ctx.user.id) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const website = await getGeneratedWebsite(input.projectId);
+        if (!website) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Für dieses Projekt wurde noch keine Website generiert." });
+        }
+        if (input.attachedImage) {
+          try {
+            validateAttachedImage(input.attachedImage);
+          } catch (err) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: err instanceof Error ? err.message : "Ungültiges Bild.",
+            });
+          }
+        }
+
+        const provider = (project.llmProvider ?? "manus") as "manus" | "gemini" | "claude";
+        const result = await reviseWebsiteViaChat(
+          website.htmlContent,
+          input.message,
+          provider,
+          input.attachedImage
+        );
+        await upsertGeneratedWebsite(input.projectId, result.htmlContent, result.configJson);
+
+        return { reply: result.reply, htmlContent: result.htmlContent };
       }),
   }),
 });
