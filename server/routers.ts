@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { validateUrlShape } from "./_core/ssrf";
 import {
   createProject,
   deleteProject,
@@ -56,11 +57,21 @@ export const appRouter = router({
       .input(
         z.object({
           name: z.string().min(1).max(255),
-          urls: z.array(z.string().url()).min(1).max(5),
+          urls: z.array(z.string().url()).min(1).max(7),
           llmProvider: z.enum(["manus", "gemini", "claude"]).default("manus"),
         })
       )
       .mutation(async ({ ctx, input }) => {
+        for (const url of input.urls) {
+          try {
+            validateUrlShape(url);
+          } catch (err) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: err instanceof Error ? err.message : `Ungültige URL: ${url}`,
+            });
+          }
+        }
         const projectId = await createProject(ctx.user.id, input.name, input.llmProvider);
         await insertCompetitorUrls(projectId, input.urls);
         return { projectId };

@@ -3,6 +3,8 @@
  * Fetches competitor URLs server-side and extracts structured content.
  */
 
+import { safeFetchText } from "./_core/ssrf";
+
 export interface ScrapedPage {
   url: string;
   title: string;
@@ -55,7 +57,7 @@ export async function scrapePage(url: string): Promise<ScrapedPage> {
 
   let html = "";
   try {
-    const response = await fetch(url, {
+    html = await safeFetchText(url, {
       signal: controller.signal,
       headers: {
         "User-Agent":
@@ -64,7 +66,6 @@ export async function scrapePage(url: string): Promise<ScrapedPage> {
         "Accept-Language": "de,en;q=0.9",
       },
     });
-    html = await response.text();
   } finally {
     clearTimeout(timeout);
   }
