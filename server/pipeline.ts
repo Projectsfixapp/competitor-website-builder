@@ -9,6 +9,42 @@ import type { ScrapedPage } from "./scraper";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface SeoSignals {
+  hasMetaDescription: boolean;
+  hasCanonical: boolean;
+  hasOpenGraph: boolean;
+  hasJsonLd: boolean;
+  hasSitemap: boolean;
+  h1Count: number;
+  imageAltCoverage: number;
+  totalImages: number;
+}
+
+export interface StructureSignals {
+  hasNav: boolean;
+  headingLevelsUsed: number;
+  paragraphCount: number;
+  ctaCount: number;
+}
+
+export interface CompetitorScoreBreakdown {
+  content: number;
+  seo: number;
+  structure: number;
+  conversion: number;
+}
+
+export interface CompetitorScore {
+  url: string;
+  title: string;
+  rank: number;
+  overallScore: number;
+  breakdown: CompetitorScoreBreakdown;
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+}
+
 export interface CompetitorInsights {
   usps: string[];
   keywords: string[];
@@ -22,6 +58,7 @@ export interface CompetitorInsights {
     summary: string;
     usps: string[];
   }>;
+  scores: CompetitorScore[];
 }
 
 export interface GeneratedWebsiteData {
@@ -29,79 +66,223 @@ export interface GeneratedWebsiteData {
   configJson: Record<string, unknown>;
 }
 
+// ─── Deterministic scoring (from real scraped signals, not LLM guesswork) ─────
+
+function clampScore(score: number): number {
+  return Math.max(1, Math.min(10, Math.round(score * 10) / 10));
+}
+
+export function computeSeoSignals(page: ScrapedPage): SeoSignals {
+  const h1Count = page.headings.filter((h) => h.level === 1).length;
+  const totalImages = page.images.length;
+  const imagesWithAlt = page.images.filter((img) => img.alt.length > 0).length;
+  return {
+    hasMetaDescription: page.metaDescription.length > 0,
+    hasCanonical: Boolean(page.seo.canonical),
+    hasOpenGraph: Boolean(page.seo.ogTitle || page.seo.ogDescription || page.seo.ogImage),
+    hasJsonLd: page.seo.jsonLd.length > 0,
+    hasSitemap: page.sitemapUrls.length > 0,
+    h1Count,
+    imageAltCoverage: totalImages > 0 ? imagesWithAlt / totalImages : 1,
+    totalImages,
+  };
+}
+
+/** Weights sum to 10: every point is tied to a checkable fact, not a vibe. */
+export function scoreSeoSignals(signals: SeoSignals): number {
+  let score = 0;
+  if (signals.hasMetaDescription) score += 2;
+  if (signals.hasCanonical) score += 1;
+  if (signals.hasOpenGraph) score += 1.5;
+  if (signals.hasJsonLd) score += 1.5;
+  if (signals.hasSitemap) score += 1;
+  if (signals.h1Count === 1) score += 1.5;
+  else if (signals.h1Count > 1) score += 0.5; // multiple H1s: minor smell, still some credit
+  score += signals.imageAltCoverage * 1.5;
+  return clampScore(score);
+}
+
+export function computeStructureSignals(page: ScrapedPage): StructureSignals {
+  return {
+    hasNav: page.navItems.length > 0,
+    headingLevelsUsed: new Set(page.headings.map((h) => h.level)).size,
+    paragraphCount: page.paragraphs.length,
+    ctaCount: page.ctaTexts.length,
+  };
+}
+
+/** Weights sum to 10. Judges page organization, not visual design (not derivable from text/HTML alone). */
+export function scoreStructureSignals(signals: StructureSignals): number {
+  let score = 0;
+  if (signals.hasNav) score += 2.5;
+  score += Math.min(signals.headingLevelsUsed, 3) * 1.2;
+  score += Math.min(signals.paragraphCount / 15, 1) * 2.4;
+  if (signals.ctaCount > 0) score += 1.5;
+  return clampScore(score);
+}
+
 // ─── Analysis ─────────────────────────────────────────────────────────────────
+
+interface LlmCompetitorJudgement {
+  index: number;
+  contentScore?: number;
+  conversionScore?: number;
+  summary?: string;
+  strengths?: string[];
+  weaknesses?: string[];
+}
+
+/**
+ * Calls the LLM and parses its response as JSON, retrying once with a
+ * stronger instruction if the first attempt isn't valid JSON. Throws instead
+ * of silently falling back to {} — a silently "successful" empty analysis is
+ * worse than a clearly failed one that the SSE error handler can surface.
+ */
+async function callLLMForJson(
+  buildOpts: (attempt: number) => Parameters<typeof callLLM>[0],
+  maxAttempts = 2
+): Promise<Record<string, unknown>> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const raw = await callLLM(buildOpts(attempt));
+    try {
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch (err) {
+      lastError = err;
+      console.error(`[Pipeline] JSON-Parse-Fehler (Versuch ${attempt}/${maxAttempts}):`, raw.slice(0, 200));
+    }
+  }
+  throw new Error(
+    `Die KI-Antwort konnte nach ${maxAttempts} Versuchen nicht als valides JSON gelesen werden: ${String(lastError)}`
+  );
+}
 
 export async function analyzeCompetitors(pages: ScrapedPage[], provider: LLMProvider = "manus"): Promise<CompetitorInsights> {
   const pagesText = pages
-    .map(
-      (p, i) => `
+    .map((p, i) => {
+      const seo = computeSeoSignals(p);
+      return `
 --- MITBEWERBER ${i + 1}: ${p.url} ---
 Titel: ${p.title}
 Meta-Description: ${p.metaDescription}
 Headlines: ${p.headlines.join(" | ")}
 CTAs: ${p.ctaTexts.join(" | ")}
 Paragraphen (Auszug): ${p.paragraphs.slice(0, 5).join(" | ")}
+Bilder: ${seo.totalImages} gefunden, ${Math.round(seo.imageAltCoverage * 100)}% mit Alt-Text
+SEO-Signale (automatisch ermittelt): Meta-Description ${seo.hasMetaDescription ? "ja" : "nein"}, Canonical ${seo.hasCanonical ? "ja" : "nein"}, Open Graph ${seo.hasOpenGraph ? "ja" : "nein"}, strukturierte Daten ${seo.hasJsonLd ? "ja" : "nein"}, Sitemap ${seo.hasSitemap ? "ja" : "nein"}, H1-Anzahl ${seo.h1Count}
 Volltext (Auszug): ${p.fullText.slice(0, 2000)}
-`
-    )
+`;
+    })
     .join("\n");
 
-  const raw = await callLLM({
-    provider,
-    responseFormat: "json",
-    messages: [
-      {
-        role: "system",
-        content: `Du bist ein Elite-Stratege für digitales Marketing und Conversion-Optimierung.
-Analysiere die Mitbewerber-Websites und extrahiere strukturierte Insights.
-Antworte AUSSCHLIESSLICH mit validem JSON – kein Markdown, keine Erklärungen.`,
-      },
-      {
-        role: "user",
-        content: `Analysiere diese Mitbewerber-Websites und extrahiere:
+  const systemPrompt = `Du bist ein Elite-Stratege für digitales Marketing und Conversion-Optimierung.
+Analysiere die Mitbewerber-Websites und extrahiere strukturierte Insights sowie eine vergleichende Bewertung.
+Antworte AUSSCHLIESSLICH mit validem JSON – kein Markdown, keine Erklärungen.`;
+
+  const userPrompt = `Analysiere diese ${pages.length} Mitbewerber-Websites und vergleiche sie direkt miteinander:
 
 ${pagesText}
 
 Gib folgendes JSON zurück:
 {
-  "usps": ["USP 1", "USP 2", ...],  // 5-10 einzigartige Verkaufsargumente aus ALLEN Mitbewerbern
-  "keywords": ["keyword1", ...],     // 10-15 wichtigste SEO-Keywords
+  "usps": ["USP 1", "USP 2", ...],
+  "keywords": ["keyword1", ...],
   "toneOfVoice": "Beschreibung des Kommunikationsstils",
-  "structurePatterns": ["Muster 1", ...],  // Seitenstruktur-Muster (z.B. "Hero mit Video", "3-Spalten-Features")
-  "ctaPatterns": ["CTA 1", ...],     // Effektive CTA-Formulierungen
+  "structurePatterns": ["Muster 1", ...],
+  "ctaPatterns": ["CTA 1", ...],
   "targetAudience": "Beschreibung der Zielgruppe",
   "competitorSummaries": [
+    { "url": "https://...", "title": "Seitentitel", "summary": "Kurze Zusammenfassung der Positionierung", "usps": ["USP 1", "USP 2", "USP 3"] }
+  ],
+  "competitorScores": [
     {
-      "url": "https://...",
-      "title": "Seitentitel",
-      "summary": "Kurze Zusammenfassung der Positionierung",
-      "usps": ["USP 1", "USP 2", "USP 3"]
+      "index": 1,
+      "contentScore": 7,
+      "conversionScore": 6,
+      "summary": "Ein bis zwei Sätze, für absolute Laien verständlich, zur Gesamteinschätzung dieser Seite im Vergleich zu den anderen.",
+      "strengths": ["Stärke 1", "Stärke 2"],
+      "weaknesses": ["Schwäche 1", "Schwäche 2"]
     }
   ]
-}`,
+}
+
+Wichtig für competitorScores:
+- "index" entspricht der MITBEWERBER-Nummer oben (1, 2, 3, ...) – für JEDEN Mitbewerber genau ein Eintrag
+- contentScore (1-10): Qualität/Überzeugungskraft der Texte und USPs im Vergleich zu den ANDEREN Mitbewerbern
+- conversionScore (1-10): Klarheit und Wirksamkeit der CTAs im Vergleich zu den ANDEREN Mitbewerbern
+- Bewerte relativ zueinander, nicht absolut – bei nur einem Mitbewerber ist 7 ein neutraler Standardwert`;
+
+  const parsed = await callLLMForJson((attempt) => ({
+    provider,
+    responseFormat: "json",
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content:
+          attempt === 1
+            ? userPrompt
+            : `${userPrompt}\n\nWICHTIG: Deine vorherige Antwort war kein valides JSON. Antworte dieses Mal AUSSCHLIESSLICH mit einem einzigen validen JSON-Objekt, ohne Markdown-Codeblock, ohne Kommentare.`,
       },
     ],
+  }));
+
+  const usps = Array.isArray(parsed.usps) ? (parsed.usps as string[]) : [];
+  const keywords = Array.isArray(parsed.keywords) ? (parsed.keywords as string[]) : [];
+  const toneOfVoice = typeof parsed.toneOfVoice === "string" ? parsed.toneOfVoice : "Professionell";
+  const structurePatterns = Array.isArray(parsed.structurePatterns) ? (parsed.structurePatterns as string[]) : [];
+  const ctaPatterns = Array.isArray(parsed.ctaPatterns) ? (parsed.ctaPatterns as string[]) : [];
+  const targetAudience = typeof parsed.targetAudience === "string" ? parsed.targetAudience : "Allgemein";
+  const competitorSummaries = Array.isArray(parsed.competitorSummaries)
+    ? (parsed.competitorSummaries as CompetitorInsights["competitorSummaries"])
+    : [];
+
+  const judgements = Array.isArray(parsed.competitorScores)
+    ? (parsed.competitorScores as LlmCompetitorJudgement[])
+    : [];
+  const judgementByIndex = new Map(judgements.map((j) => [j.index, j]));
+
+  const unranked = pages.map((page, i) => {
+    const judgement = judgementByIndex.get(i + 1);
+    if (!judgement) {
+      console.warn(
+        `[Pipeline] Keine KI-Bewertung für Mitbewerber ${i + 1} (${page.url}) erhalten, neutrale Standard-Scores verwendet.`
+      );
+    }
+    const breakdown: CompetitorScoreBreakdown = {
+      content: clampScore(judgement?.contentScore ?? 5),
+      seo: scoreSeoSignals(computeSeoSignals(page)),
+      structure: scoreStructureSignals(computeStructureSignals(page)),
+      conversion: clampScore(judgement?.conversionScore ?? 5),
+    };
+    const overallScore = clampScore(
+      (breakdown.content + breakdown.seo + breakdown.structure + breakdown.conversion) / 4
+    );
+    return {
+      url: page.url,
+      title: page.title,
+      overallScore,
+      breakdown,
+      summary: judgement?.summary ?? "Keine detaillierte Einschätzung verfügbar.",
+      strengths: judgement?.strengths ?? [],
+      weaknesses: judgement?.weaknesses ?? [],
+    };
   });
 
-  const jsonStr = raw;
+  const scores: CompetitorScore[] = unranked
+    .slice()
+    .sort((a, b) => b.overallScore - a.overallScore)
+    .map((entry, i) => ({ ...entry, rank: i + 1 }));
 
-  let parsed: Partial<CompetitorInsights>;
-  try {
-    parsed = JSON.parse(jsonStr) as Partial<CompetitorInsights>;
-  } catch {
-    console.error("[Pipeline] JSON parse error, using fallback", jsonStr.slice(0, 200));
-    parsed = {};
-  }
-
-  // Fallback-Werte für fehlende Felder
   return {
-    usps: parsed.usps ?? [],
-    keywords: parsed.keywords ?? [],
-    toneOfVoice: parsed.toneOfVoice ?? "Professionell",
-    structurePatterns: parsed.structurePatterns ?? [],
-    ctaPatterns: parsed.ctaPatterns ?? [],
-    targetAudience: parsed.targetAudience ?? "Allgemein",
-    competitorSummaries: parsed.competitorSummaries ?? [],
+    usps,
+    keywords,
+    toneOfVoice,
+    structurePatterns,
+    ctaPatterns,
+    targetAudience,
+    competitorSummaries,
+    scores,
   };
 }
 
@@ -112,6 +293,13 @@ export async function generateWebsite(
   pages: ScrapedPage[],
   provider: LLMProvider = "manus"
 ): Promise<GeneratedWebsiteData> {
+  const rankingSummary = insights.scores
+    .map(
+      (s) =>
+        `Platz ${s.rank} (Score ${s.overallScore}/10): ${s.title} – Stärken: ${s.strengths.join(", ") || "–"}; Schwächen: ${s.weaknesses.join(", ") || "–"}`
+    )
+    .join("\n");
+
   const insightsSummary = `
 USPs der Mitbewerber: ${insights.usps.join(", ")}
 Keywords: ${insights.keywords.join(", ")}
@@ -120,6 +308,8 @@ Zielgruppe: ${insights.targetAudience}
 Struktur-Muster: ${insights.structurePatterns.join(", ")}
 CTA-Muster: ${insights.ctaPatterns.join(", ")}
 Branche/Kontext: ${pages[0]?.title ?? "Unbekannt"}
+Wettbewerbs-Ranking:
+${rankingSummary}
 `;
 
   const htmlContent_raw = await callLLM({
@@ -172,6 +362,7 @@ ${insightsSummary}
 
 Wichtig:
 - Übernimm die besten Elemente aller Mitbewerber und mache sie BESSER
+- Übertriff besonders den Erstplatzierten im Ranking, und vermeide die genannten Schwächen aller Mitbewerber
 - Schreibe völlig neue, einzigartige Copy (kein Copy-Paste)
 - Optimiere für SEO und Conversion
 - Alle Texte müssen contenteditable="true" haben

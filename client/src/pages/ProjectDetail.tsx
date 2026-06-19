@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Tag,
   Target,
+  Trophy,
   Users,
   Zap,
 } from "lucide-react";
@@ -32,6 +33,17 @@ interface SSEScraped {
   headlines: string[];
 }
 
+interface CompetitorScore {
+  url: string;
+  title: string;
+  rank: number;
+  overallScore: number;
+  breakdown: { content: number; seo: number; structure: number; conversion: number };
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+}
+
 interface SSEAnalysis {
   insights: {
     usps: string[];
@@ -41,7 +53,21 @@ interface SSEAnalysis {
     ctaPatterns: string[];
     targetAudience: string;
     competitorSummaries: Array<{ url: string; title: string; summary: string; usps: string[] }>;
+    scores: CompetitorScore[];
   };
+}
+
+const RANK_BADGE_STYLE: Record<number, string> = {
+  1: "bg-amber-100 text-amber-700 border-amber-200",
+  2: "bg-slate-100 text-slate-600 border-slate-200",
+  3: "bg-orange-50 text-orange-700 border-orange-200",
+};
+
+function rankLabel(rank: number): string {
+  if (rank === 1) return "1. Platz";
+  if (rank === 2) return "2. Platz";
+  if (rank === 3) return "3. Platz";
+  return `${rank}. Platz`;
 }
 
 export default function ProjectDetail() {
@@ -329,6 +355,71 @@ export default function ProjectDetail() {
               <div className="accent-line" />
               <h2 className="font-serif text-xl font-semibold">Analyse-Ergebnisse</h2>
             </div>
+
+            {/* Ranking */}
+            {(analysis.scores ?? []).length > 0 && (
+              <div className="card-premium p-5 space-y-3">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Trophy size={15} className="text-accent" />
+                  Wettbewerbs-Ranking
+                </div>
+                <div className="space-y-3">
+                  {(analysis.scores ?? []).map((s) => (
+                    <div key={s.url} className="border border-border/50 rounded-lg p-4 space-y-2.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span
+                            className={`shrink-0 text-[10px] font-semibold px-2 py-1 rounded-full border ${
+                              RANK_BADGE_STYLE[s.rank] ?? "bg-secondary text-muted-foreground border-border"
+                            }`}
+                          >
+                            {rankLabel(s.rank)}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold truncate">{s.title}</p>
+                            <p className="text-[10px] text-muted-foreground truncate">{s.url}</p>
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="text-lg font-serif font-semibold leading-none">{s.overallScore}<span className="text-xs text-muted-foreground">/10</span></p>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-muted-foreground leading-relaxed">{s.summary}</p>
+
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {([
+                          ["Content", s.breakdown.content],
+                          ["SEO", s.breakdown.seo],
+                          ["Struktur", s.breakdown.structure],
+                          ["Conversion", s.breakdown.conversion],
+                        ] as const).map(([label, value]) => (
+                          <div key={label} className="bg-secondary rounded-md px-2 py-1.5 text-center">
+                            <p className="text-[9px] uppercase tracking-wide text-muted-foreground">{label}</p>
+                            <p className="text-xs font-semibold">{value}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {(s.strengths.length > 0 || s.weaknesses.length > 0) && (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {s.strengths.map((str, i) => (
+                            <span key={`s-${i}`} className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-[10px]">
+                              + {str}
+                            </span>
+                          ))}
+                          {s.weaknesses.map((w, i) => (
+                            <span key={`w-${i}`} className="px-2 py-0.5 bg-red-50 text-red-600 border border-red-200 rounded-full text-[10px]">
+                              − {w}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* USPs */}

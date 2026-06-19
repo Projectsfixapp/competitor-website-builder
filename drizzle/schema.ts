@@ -73,6 +73,18 @@ export const analysisResults = mysqlTable("analysis_results", {
   competitorSummaries: json("competitorSummaries").$type<
     Array<{ url: string; title: string; summary: string; usps: string[] }>
   >(),
+  scores: json("scores").$type<
+    Array<{
+      url: string;
+      title: string;
+      rank: number;
+      overallScore: number;
+      breakdown: { content: number; seo: number; structure: number; conversion: number };
+      summary: string;
+      strengths: string[];
+      weaknesses: string[];
+    }>
+  >(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

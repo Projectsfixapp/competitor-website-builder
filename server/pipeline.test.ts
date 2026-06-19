@@ -1,5 +1,47 @@
-import { describe, expect, it } from "vitest";
-import { extractConfigJson } from "./pipeline";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import type { ScrapedPage } from "./scraper";
+
+const callLLMMock = vi.fn();
+vi.mock("./llmAdapter", () => ({
+  callLLM: (...args: unknown[]) => callLLMMock(...args),
+}));
+
+import {
+  analyzeCompetitors,
+  computeSeoSignals,
+  computeStructureSignals,
+  extractConfigJson,
+  scoreSeoSignals,
+  scoreStructureSignals,
+} from "./pipeline";
+
+function makePage(overrides: Partial<ScrapedPage> = {}): ScrapedPage {
+  return {
+    url: "https://example.com",
+    title: "Beispiel GmbH",
+    metaDescription: "",
+    headlines: [],
+    headings: [],
+    paragraphs: [],
+    ctaTexts: [],
+    navItems: [],
+    images: [],
+    seo: {
+      canonical: null,
+      robots: null,
+      ogTitle: null,
+      ogDescription: null,
+      ogImage: null,
+      twitterCard: null,
+      viewport: null,
+      lang: null,
+      jsonLd: [],
+    },
+    sitemapUrls: [],
+    fullText: "",
+    ...overrides,
+  };
+}
 
 describe("extractConfigJson", () => {
   it("returns {} when no CONFIG block is present", () => {
@@ -36,5 +78,165 @@ describe("extractConfigJson", () => {
     // fails to parse and falls back to {} — it must never reach process.exit().
     const html = `<script>const CONFIG = { x: "a".constructor.constructor("process.exit(1)")() };</script>`;
     expect(extractConfigJson(html)).toEqual({});
+  });
+});
+
+describe("computeSeoSignals / scoreSeoSignals", () => {
+  it("scores a page with every signal present near the top", () => {
+    const page = makePage({
+      metaDescription: "Eine gute Beschreibung",
+      headings: [{ level: 1, text: "Titel" }],
+      images: [{ url: "https://example.com/a.jpg", alt: "Bild A", width: null, height: null }],
+      seo: {
+        canonical: "https://example.com/",
+        robots: null,
+        ogTitle: "Beispiel",
+        ogDescription: null,
+        ogImage: null,
+        twitterCard: null,
+        viewport: null,
+        lang: "de",
+        jsonLd: [{ "@type": "Organization" }],
+      },
+      sitemapUrls: ["https://example.com/sitemap.xml"],
+    });
+    const signals = computeSeoSignals(page);
+    expect(signals).toEqual({
+      hasMetaDescription: true,
+      hasCanonical: true,
+      hasOpenGraph: true,
+      hasJsonLd: true,
+      hasSitemap: true,
+      h1Count: 1,
+      imageAltCoverage: 1,
+      totalImages: 1,
+    });
+    expect(scoreSeoSignals(signals)).toBe(10);
+  });
+
+  it("scores a page with nothing present at the bottom", () => {
+    const page = makePage({ images: [{ url: "https://example.com/a.jpg", alt: "", width: null, height: null }] });
+    const signals = computeSeoSignals(page);
+    expect(scoreSeoSignals(signals)).toBe(1); // clamped floor, not 0
+  });
+
+  it("gives partial (not zero) credit for multiple H1s", () => {
+    const single = computeSeoSignals(makePage({ headings: [{ level: 1, text: "A" }] }));
+    const multiple = computeSeoSignals(
+      makePage({ headings: [{ level: 1, text: "A" }, { level: 1, text: "B" }] })
+    );
+    expect(scoreSeoSignals(single)).toBeGreaterThan(scoreSeoSignals(multiple));
+    expect(scoreSeoSignals(multiple)).toBeGreaterThan(scoreSeoSignals(computeSeoSignals(makePage())));
+  });
+
+  it("never penalizes alt-text coverage when there are no images at all", () => {
+    const signals = computeSeoSignals(makePage({ images: [] }));
+    expect(signals.imageAltCoverage).toBe(1);
+  });
+});
+
+describe("computeStructureSignals / scoreStructureSignals", () => {
+  it("scores a well-organized page near the top", () => {
+    const page = makePage({
+      navItems: ["Home", "Kontakt"],
+      headings: [
+        { level: 1, text: "A" },
+        { level: 2, text: "B" },
+        { level: 3, text: "C" },
+      ],
+      paragraphs: new Array(15).fill("Ein ausreichend langer Absatztext fuer die Pruefung."),
+      ctaTexts: ["Jetzt anfragen"],
+    });
+    expect(scoreStructureSignals(computeStructureSignals(page))).toBe(10);
+  });
+
+  it("scores a bare page at the floor", () => {
+    expect(scoreStructureSignals(computeStructureSignals(makePage()))).toBe(1);
+  });
+});
+
+describe("analyzeCompetitors", () => {
+  beforeEach(() => {
+    callLLMMock.mockReset();
+  });
+
+  it("ranks competitors by overall score, best first", async () => {
+    callLLMMock.mockResolvedValue(
+      JSON.stringify({
+        usps: ["USP"],
+        keywords: ["kw"],
+        toneOfVoice: "Professionell",
+        structurePatterns: [],
+        ctaPatterns: [],
+        targetAudience: "KMU",
+        competitorSummaries: [],
+        competitorScores: [
+          { index: 1, contentScore: 3, conversionScore: 3, summary: "Schwach", strengths: [], weaknesses: ["X"] },
+          { index: 2, contentScore: 9, conversionScore: 9, summary: "Stark", strengths: ["Y"], weaknesses: [] },
+        ],
+      })
+    );
+
+    const pages = [makePage({ url: "https://weak.example", title: "Weak" }), makePage({ url: "https://strong.example", title: "Strong" })];
+    const insights = await analyzeCompetitors(pages, "manus");
+
+    expect(insights.scores).toHaveLength(2);
+    expect(insights.scores[0]!.url).toBe("https://strong.example");
+    expect(insights.scores[0]!.rank).toBe(1);
+    expect(insights.scores[1]!.url).toBe("https://weak.example");
+    expect(insights.scores[1]!.rank).toBe(2);
+    expect(insights.scores[0]!.overallScore).toBeGreaterThan(insights.scores[1]!.overallScore);
+  });
+
+  it("falls back to neutral scores for a competitor the LLM didn't judge, without failing the whole analysis", async () => {
+    callLLMMock.mockResolvedValue(
+      JSON.stringify({
+        usps: [],
+        keywords: [],
+        toneOfVoice: "Professionell",
+        structurePatterns: [],
+        ctaPatterns: [],
+        targetAudience: "Allgemein",
+        competitorSummaries: [],
+        competitorScores: [{ index: 1, contentScore: 8, conversionScore: 8, summary: "Gut", strengths: [], weaknesses: [] }],
+      })
+    );
+
+    const pages = [makePage({ url: "https://a.example" }), makePage({ url: "https://b.example" })];
+    const insights = await analyzeCompetitors(pages, "manus");
+
+    const unjudged = insights.scores.find((s) => s.url === "https://b.example")!;
+    expect(unjudged.breakdown.content).toBe(5);
+    expect(unjudged.breakdown.conversion).toBe(5);
+    expect(unjudged.summary).toBe("Keine detaillierte Einschätzung verfügbar.");
+  });
+
+  it("retries once on malformed JSON and succeeds if the retry is valid", async () => {
+    callLLMMock
+      .mockResolvedValueOnce("nicht valides json{{{")
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          usps: [],
+          keywords: [],
+          toneOfVoice: "Professionell",
+          structurePatterns: [],
+          ctaPatterns: [],
+          targetAudience: "Allgemein",
+          competitorSummaries: [],
+          competitorScores: [{ index: 1, contentScore: 5, conversionScore: 5, summary: "OK", strengths: [], weaknesses: [] }],
+        })
+      );
+
+    const insights = await analyzeCompetitors([makePage()], "manus");
+
+    expect(callLLMMock).toHaveBeenCalledTimes(2);
+    expect(insights.scores).toHaveLength(1);
+  });
+
+  it("throws a clear error instead of silently returning an empty analysis when the LLM never returns valid JSON", async () => {
+    callLLMMock.mockResolvedValue("nicht valides json{{{");
+
+    await expect(analyzeCompetitors([makePage()], "manus")).rejects.toThrow(/valides JSON/);
+    expect(callLLMMock).toHaveBeenCalledTimes(2); // exhausted both attempts, didn't retry forever
   });
 });
