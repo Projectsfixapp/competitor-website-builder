@@ -1,14 +1,6 @@
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
 FROM node:22-alpine AS builder
 
-# Vite inlines import.meta.env.VITE_* at build time, not at container runtime -
-# setting these in the Render dashboard alone has no effect unless they're also
-# passed through as Docker build args.
-ARG VITE_OAUTH_PORTAL_URL
-ARG VITE_APP_ID
-ENV VITE_OAUTH_PORTAL_URL=$VITE_OAUTH_PORTAL_URL
-ENV VITE_APP_ID=$VITE_APP_ID
-
 WORKDIR /app
 
 # Install pnpm

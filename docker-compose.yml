@@ -36,20 +36,16 @@ services:
       PORT: 3000
       DATABASE_URL: mysql://${MYSQL_USER:-appuser}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE:-competitor_builder}
       JWT_SECRET: ${JWT_SECRET}
-      # LLM API Keys (optional – only needed for Gemini/Claude provider)
+      OWNER_EMAIL: ${OWNER_EMAIL:-}
+      # LLM API Keys (GEMINI_API_KEY is required for the AI image fallback regardless of provider)
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Manus OAuth (required for login)
-      VITE_APP_ID: ${VITE_APP_ID}
-      OAUTH_SERVER_URL: ${OAUTH_SERVER_URL:-https://api.manus.im}
-      VITE_OAUTH_PORTAL_URL: ${VITE_OAUTH_PORTAL_URL:-https://manus.im}
-      OWNER_OPEN_ID: ${OWNER_OPEN_ID:-}
-      OWNER_NAME: ${OWNER_NAME:-}
-      # Manus Built-in LLM (required for Manus provider)
-      BUILT_IN_FORGE_API_URL: ${BUILT_IN_FORGE_API_URL:-}
-      BUILT_IN_FORGE_API_KEY: ${BUILT_IN_FORGE_API_KEY:-}
-      VITE_FRONTEND_FORGE_API_KEY: ${VITE_FRONTEND_FORGE_API_KEY:-}
-      VITE_FRONTEND_FORGE_API_URL: ${VITE_FRONTEND_FORGE_API_URL:-}
+      # Cloudflare R2 (Logo-/Bilder-Uploads)
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+      R2_PUBLIC_URL_BASE: ${R2_PUBLIC_URL_BASE:-}
     ports:
       - "127.0.0.1:3000:3000"   # Only accessible via nginx reverse proxy
     healthcheck:

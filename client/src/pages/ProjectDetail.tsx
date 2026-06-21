@@ -179,16 +179,14 @@ export default function ProjectDetail() {
   const isError = project.status === "error" && !isRunning;
 
   const providerLabel: Record<string, string> = {
-    manus: "Manus Built-in",
     gemini: "Gemini 2.5 Flash",
     claude: "Claude Sonnet",
   };
   const providerColor: Record<string, string> = {
-    manus: "bg-primary/10 text-primary",
     gemini: "bg-blue-50 text-blue-600",
     claude: "bg-orange-50 text-orange-600",
   };
-  const providerKey = (project.llmProvider ?? "manus") as string;
+  const providerKey = (project.llmProvider ?? "claude") as string;
 
   return (
     <AppLayout

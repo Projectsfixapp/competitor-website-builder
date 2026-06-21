@@ -8,9 +8,10 @@ vi.mock("./db", () => ({
     {
       id: 1,
       userId: 1,
+      anonymousId: null,
       name: "Test Projekt",
       status: "done",
-      llmProvider: "manus",
+      llmProvider: "claude",
       errorMessage: null,
       createdAt: new Date("2026-01-01"),
       updatedAt: new Date("2026-01-01"),
@@ -19,9 +20,11 @@ vi.mock("./db", () => ({
   getProjectById: vi.fn().mockResolvedValue({
     id: 1,
     userId: 1,
+    anonymousId: null,
     name: "Test Projekt",
     status: "done",
-    llmProvider: "manus",
+    llmProvider: "claude",
+    ownSiteUrl: null,
     errorMessage: null,
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
@@ -53,11 +56,12 @@ vi.mock("./db", () => ({
   }),
   updateGeneratedWebsiteHtml: vi.fn().mockResolvedValue(undefined),
   updateProjectStatus: vi.fn().mockResolvedValue(undefined),
+  updateProjectOwnSiteData: vi.fn().mockResolvedValue(undefined),
   upsertAnalysisResult: vi.fn().mockResolvedValue(undefined),
   upsertGeneratedWebsite: vi.fn().mockResolvedValue(undefined),
-  updateCompetitorUrlScraped: vi.fn().mockResolvedValue(undefined),
-  upsertUser: vi.fn().mockResolvedValue(undefined),
-  getUserByOpenId: vi.fn().mockResolvedValue(undefined),
+  countUnclaimedAnonymousProjects: vi.fn().mockResolvedValue(0),
+  claimAnonymousProjects: vi.fn().mockResolvedValue([]),
+  saveBrandAssetsToUser: vi.fn().mockResolvedValue(undefined),
 }));
 
 // ─── Mock chat-revision pipeline (real LLM call, mocked at the function boundary) ──
@@ -79,18 +83,38 @@ function createAuthContext(): TrpcContext {
   return {
     user: {
       id: 1,
-      openId: "test-user",
+      openId: "test@example.com",
       email: "test@example.com",
       name: "Test User",
-      loginMethod: "manus",
+      passwordHash: null,
+      loginMethod: "password",
       role: "user",
+      brandLogoUrl: null,
+      brandColors: null,
+      brandAboutText: null,
+      brandServicesText: null,
+      brandContactInfo: null,
       createdAt: new Date(),
       updatedAt: new Date(),
       lastSignedIn: new Date(),
     },
+    anonymousId: "test-anon-id",
     req: { protocol: "https", headers: {} } as TrpcContext["req"],
     res: {
       clearCookie: vi.fn(),
+      cookie: vi.fn(),
+    } as unknown as TrpcContext["res"],
+  };
+}
+
+function createAnonymousContext(anonymousId = "anon-visitor-1"): TrpcContext {
+  return {
+    user: null,
+    anonymousId,
+    req: { protocol: "https", headers: {} } as TrpcContext["req"],
+    res: {
+      clearCookie: vi.fn(),
+      cookie: vi.fn(),
     } as unknown as TrpcContext["res"],
   };
 }
@@ -125,16 +149,54 @@ describe("projects.get", () => {
     vi.mocked(getProjectById).mockResolvedValueOnce({
       id: 99,
       userId: 999, // anderer Nutzer
+      anonymousId: null,
       name: "Fremdes Projekt",
       status: "done",
       errorMessage: null,
       createdAt: new Date(),
       updatedAt: new Date(),
-    });
+    } as any);
 
     const ctx = createAuthContext();
     const caller = appRouter.createCaller(ctx);
     await expect(caller.projects.get({ id: 99 })).rejects.toThrow();
+  });
+
+  it("erlaubt einem anonymen Besucher Zugriff auf sein eigenes, noch nicht geclaimtes Projekt", async () => {
+    const { getProjectById } = await import("./db");
+    vi.mocked(getProjectById).mockResolvedValueOnce({
+      id: 5,
+      userId: null,
+      anonymousId: "anon-visitor-1",
+      name: "Anonymes Projekt",
+      status: "pending",
+      errorMessage: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any);
+
+    const ctx = createAnonymousContext("anon-visitor-1");
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.projects.get({ id: 5 });
+    expect(result.project.id).toBe(5);
+  });
+
+  it("wirft NOT_FOUND wenn die anonymousId nicht zum Projekt passt", async () => {
+    const { getProjectById } = await import("./db");
+    vi.mocked(getProjectById).mockResolvedValueOnce({
+      id: 5,
+      userId: null,
+      anonymousId: "anon-visitor-1",
+      name: "Anonymes Projekt",
+      status: "pending",
+      errorMessage: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any);
+
+    const ctx = createAnonymousContext("jemand-anders");
+    const caller = appRouter.createCaller(ctx);
+    await expect(caller.projects.get({ id: 5 })).rejects.toThrow();
   });
 });
 
@@ -144,7 +206,7 @@ describe("projects.create", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.projects.create({
       name: "Neues Projekt",
-      urls: [{ url: "https://example.com", isOwnSite: false }],
+      competitorUrls: ["https://example.com"],
     });
     expect(result).toHaveProperty("projectId");
     expect(result.projectId).toBe(42);
@@ -155,7 +217,7 @@ describe("projects.create", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.projects.create({
       name: "Claude Projekt",
-      urls: [{ url: "https://example.com", isOwnSite: false }],
+      competitorUrls: ["https://example.com"],
       llmProvider: "claude",
     });
     expect(result).toHaveProperty("projectId");
@@ -166,7 +228,7 @@ describe("projects.create", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.projects.create({
       name: "Gemini Projekt",
-      urls: [{ url: "https://example.com", isOwnSite: false }],
+      competitorUrls: ["https://example.com"],
       llmProvider: "gemini",
     });
     expect(result).toHaveProperty("projectId");
@@ -178,54 +240,41 @@ describe("projects.create", () => {
     await expect(
       caller.projects.create({
         name: "Test",
-        urls: [{ url: "keine-url", isOwnSite: false }],
+        competitorUrls: ["keine-url"],
       })
     ).rejects.toThrow();
   });
 
-  it("erfordert mindestens eine URL", async () => {
+  it("erfordert mindestens eine Mitbewerber-URL", async () => {
     const ctx = createAuthContext();
     const caller = appRouter.createCaller(ctx);
     await expect(
       caller.projects.create({
         name: "Test",
-        urls: [],
+        competitorUrls: [],
       })
     ).rejects.toThrow();
   });
 
-  it("erlaubt höchstens eine URL als eigene Website", async () => {
+  it("lehnt colorMode 'extract' ohne eigene Website ab", async () => {
     const ctx = createAuthContext();
     const caller = appRouter.createCaller(ctx);
     await expect(
       caller.projects.create({
         name: "Test",
-        urls: [
-          { url: "https://a.example", isOwnSite: true },
-          { url: "https://b.example", isOwnSite: true },
-        ],
-      })
-    ).rejects.toThrow();
-  });
-
-  it("lehnt colorMode 'extract' ohne markierte eigene Website ab", async () => {
-    const ctx = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-    await expect(
-      caller.projects.create({
-        name: "Test",
-        urls: [{ url: "https://example.com", isOwnSite: false }],
+        competitorUrls: ["https://example.com"],
         colorMode: "extract",
       })
     ).rejects.toThrow();
   });
 
-  it("akzeptiert colorMode 'extract' mit markierter eigener Website", async () => {
+  it("akzeptiert colorMode 'extract' mit angegebener eigener Website", async () => {
     const ctx = createAuthContext();
     const caller = appRouter.createCaller(ctx);
     const result = await caller.projects.create({
       name: "Test",
-      urls: [{ url: "https://example.com", isOwnSite: true }],
+      competitorUrls: ["https://example.com"],
+      ownSiteUrl: "https://eigene-seite.example",
       colorMode: "extract",
     });
     expect(result).toHaveProperty("projectId");
@@ -237,9 +286,34 @@ describe("projects.create", () => {
     await expect(
       caller.projects.create({
         name: "Test",
-        urls: [{ url: "https://example.com", isOwnSite: false }],
+        competitorUrls: ["https://example.com"],
         colorMode: "manual",
         backgroundColor: "#123456",
+      })
+    ).rejects.toThrow();
+  });
+
+  it("erlaubt einem anonymen Besucher eine kostenlose Analyse ohne Konto", async () => {
+    const { countUnclaimedAnonymousProjects } = await import("./db");
+    vi.mocked(countUnclaimedAnonymousProjects).mockResolvedValueOnce(0);
+    const ctx = createAnonymousContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.projects.create({
+      name: "Anonymes Projekt",
+      competitorUrls: ["https://example.com"],
+    });
+    expect(result).toHaveProperty("projectId");
+  });
+
+  it("lehnt eine zweite anonyme Analyse ab (TOO_MANY_REQUESTS)", async () => {
+    const { countUnclaimedAnonymousProjects } = await import("./db");
+    vi.mocked(countUnclaimedAnonymousProjects).mockResolvedValueOnce(1);
+    const ctx = createAnonymousContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.projects.create({
+        name: "Zweites anonymes Projekt",
+        competitorUrls: ["https://example.com"],
       })
     ).rejects.toThrow();
   });
@@ -282,7 +356,7 @@ describe("projects.reviseViaChat", () => {
     expect(reviseWebsiteViaChatMock).toHaveBeenCalledWith(
       "<html><body>Test</body></html>",
       "Mach den Button rot",
-      "manus",
+      "claude",
       null
     );
   });
@@ -308,9 +382,10 @@ describe("projects.reviseViaChat", () => {
     vi.mocked(getProjectById).mockResolvedValueOnce({
       id: 99,
       userId: 999,
+      anonymousId: null,
       name: "Fremdes Projekt",
       status: "done",
-      llmProvider: "manus",
+      llmProvider: "claude",
       errorMessage: null,
       createdAt: new Date("2026-01-01"),
       updatedAt: new Date("2026-01-01"),

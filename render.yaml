@@ -16,6 +16,8 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
+      - key: OWNER_EMAIL
+        sync: false
       # LLM Keys – in Render Dashboard eintragen
       # GEMINI_API_KEY ist PFLICHT, nicht optional: wird auch fuer die
       # KI-Bild-Fallback-Generierung genutzt (server/geminiImages.ts),
@@ -24,21 +26,16 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-      # Manus-Plattform-Keys (nur wenn auf Manus gehostet)
-      - key: BUILT_IN_FORGE_API_KEY
+      # Cloudflare R2 (Logo-/Bilder-Uploads) – in Render Dashboard eintragen
+      - key: R2_ACCOUNT_ID
         sync: false
-      - key: BUILT_IN_FORGE_API_URL
+      - key: R2_ACCESS_KEY_ID
         sync: false
-      # OAuth (Manus) – optional, für Login
-      - key: VITE_APP_ID
+      - key: R2_SECRET_ACCESS_KEY
         sync: false
-      - key: OAUTH_SERVER_URL
+      - key: R2_BUCKET_NAME
         sync: false
-      - key: VITE_OAUTH_PORTAL_URL
-        sync: false
-      - key: OWNER_OPEN_ID
-        sync: false
-      - key: OWNER_NAME
+      - key: R2_PUBLIC_URL_BASE
         sync: false
 
 databases:

@@ -1,4 +1,8 @@
 export const COOKIE_NAME = "app_session_id";
+// Identifies a not-yet-signed-up visitor so they can run exactly one free
+// preview analysis (see countUnclaimedAnonymousProjects) and so that project
+// can be "claimed" onto their account once they register/login.
+export const ANON_COOKIE_NAME = "app_anon_id";
 export const ONE_YEAR_MS = 1000 * 60 * 60 * 24 * 365;
 export const AXIOS_TIMEOUT_MS = 30_000;
 export const UNAUTHED_ERR_MSG = 'Please login (10001)';

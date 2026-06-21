@@ -1,5 +1,7 @@
 import AppLayout from "@/components/AppLayout";
 import { AIChatBox, type Message } from "@/components/AIChatBox";
+import { AuthDialog } from "@/components/AuthDialog";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import {
@@ -31,11 +33,22 @@ const MAX_ATTACHED_IMAGE_BYTES = 6 * 1024 * 1024;
 export default function ProjectPreview() {
   const params = useParams<{ id: string }>();
   const projectId = parseInt(params.id ?? "0", 10);
+  const { isAuthenticated } = useAuth();
+  const [authOpen, setAuthOpen] = useState(false);
 
   const { data, isLoading } = trpc.projects.get.useQuery(
     { id: projectId },
     { enabled: !!projectId }
   );
+
+  /** Edit/Export/Chat are the "ausführliche Datei" — gated behind an account; the read-only preview above stays free. */
+  const requireAuth = (action: () => void) => {
+    if (!isAuthenticated) {
+      setAuthOpen(true);
+      return;
+    }
+    action();
+  };
 
   const updateHtmlMutation = trpc.projects.updateHtml.useMutation({
     onSuccess: () => toast.success("Änderungen gespeichert"),
@@ -260,7 +273,7 @@ export default function ProjectPreview() {
               <Eye size={12} /> Vorschau
             </button>
             <button
-              onClick={() => setViewMode("code")}
+              onClick={() => requireAuth(() => setViewMode("code"))}
               className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${
                 viewMode === "code"
                   ? "bg-card text-foreground shadow-sm"
@@ -306,7 +319,7 @@ export default function ProjectPreview() {
               size="sm"
               variant={editMode ? "default" : "outline"}
               className={`text-xs ${editMode ? "bg-amber-500 text-white hover:bg-amber-600 border-amber-500" : ""}`}
-              onClick={toggleEditMode}
+              onClick={() => requireAuth(toggleEditMode)}
             >
               {editMode ? (
                 <>
@@ -324,7 +337,7 @@ export default function ProjectPreview() {
             size="sm"
             variant={chatOpen ? "default" : "outline"}
             className={`text-xs ${chatOpen ? "bg-primary text-primary-foreground" : ""}`}
-            onClick={() => setChatOpen(v => !v)}
+            onClick={() => requireAuth(() => setChatOpen(v => !v))}
           >
             <MessageSquare size={12} className="mr-1" /> Per Chat ändern
           </Button>
@@ -349,7 +362,7 @@ export default function ProjectPreview() {
             size="sm"
             variant="outline"
             className="text-xs"
-            onClick={handleExport}
+            onClick={() => requireAuth(handleExport)}
           >
             <Download size={12} className="mr-1" /> Export
           </Button>
@@ -521,6 +534,12 @@ export default function ProjectPreview() {
           </div>
         )}
       </div>
+      <AuthDialog
+        open={authOpen}
+        onOpenChange={setAuthOpen}
+        title="Bereit für die Vollversion?"
+        description="Melde dich an, um zu bearbeiten, per Chat anzupassen und die Website zu exportieren."
+      />
     </div>
   );
 }

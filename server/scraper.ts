@@ -36,6 +36,11 @@ export interface ScrapedSeoMeta {
   jsonLd: unknown[];
 }
 
+export interface ScrapedLink {
+  text: string;
+  href: string;
+}
+
 export interface ScrapedPage {
   url: string;
   title: string;
@@ -48,6 +53,8 @@ export interface ScrapedPage {
   images: ScrapedImage[];
   seo: ScrapedSeoMeta;
   sitemapUrls: string[];
+  /** All same-origin links on the page (text + absolute href), used to locate About/Services/Impressum subpages. */
+  links: ScrapedLink[];
   fullText: string;
   /** Up to 3 brand accent colors (hex), best-effort from theme-color meta + inline/`<style>` CSS. */
   brandColors: string[];
@@ -257,8 +264,7 @@ export async function scrapePage(url: string): Promise<ScrapedPage> {
     html = await safeFetchText(url, {
       signal: controller.signal,
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; CompetitorAnalyzer/1.0; +https://manus.im)",
+        "User-Agent": "Mozilla/5.0 (compatible; CompetitorAnalyzer/1.0)",
         Accept: "text/html,application/xhtml+xml",
         "Accept-Language": "de,en;q=0.9",
       },
@@ -353,6 +359,22 @@ export async function scrapePage(url: string): Promise<ScrapedPage> {
   const brandColors = extractBrandColors($);
   const logoUrl = detectLogoUrl($, baseUrl, images);
 
+  const seenLinks = new Set<string>();
+  const links: ScrapedLink[] = [];
+  $("a[href]").each((_, el) => {
+    const href = $(el).attr("href");
+    if (!href) return;
+    let absoluteUrl: string;
+    try {
+      absoluteUrl = new URL(href, baseUrl).toString();
+    } catch {
+      return;
+    }
+    if (!absoluteUrl.startsWith("http") || seenLinks.has(absoluteUrl)) return;
+    seenLinks.add(absoluteUrl);
+    links.push({ text: cleanText($(el).text()), href: absoluteUrl });
+  });
+
   // Strip script/style/noscript before computing the plain-text body extract
   // (must happen after the JSON-LD/brand-color/logo passes above, which read
   // script and style content).
@@ -371,8 +393,150 @@ export async function scrapePage(url: string): Promise<ScrapedPage> {
     images,
     seo,
     sitemapUrls,
+    links: links.slice(0, 200),
     fullText,
     brandColors,
     logoUrl,
+  };
+}
+
+// ─── Own-site content extraction ───────────────────────────────────────────────
+// When the customer provides their own URL (separate from competitors), we
+// scrape a few likely subpages too — About/Services/Impressum content rarely
+// lives on the homepage — so the generated website can reuse real text
+// instead of the LLM inventing an "Über uns" section from nothing.
+
+export interface OwnSiteContent {
+  title: string;
+  logoUrl: string | null;
+  brandColors: string[];
+  aboutText: string | null;
+  servicesText: string | null;
+  contactInfo: Record<string, string> | null;
+}
+
+const MAX_OWN_SITE_SUBPAGES = 4;
+const ABOUT_KEYWORDS = ["über uns", "ueber-uns", "about", "wer wir sind", "unternehmen", "team"];
+const SERVICES_KEYWORDS = ["leistungen", "services", "angebot", "produkte", "portfolio"];
+const CONTACT_KEYWORDS = ["impressum", "kontakt", "contact", "imprint"];
+
+function matchesKeyword(value: string, keywords: string[]): boolean {
+  const normalized = value.toLowerCase();
+  return keywords.some((kw) => normalized.includes(kw));
+}
+
+/** Finds the best-matching same-origin subpage URL for a content category, preferring link text over raw path. */
+function findSubpageUrl(page: ScrapedPage, origin: string, keywords: string[]): string | null {
+  const candidates = page.links.filter((link) => {
+    try {
+      return new URL(link.href).origin === origin;
+    } catch {
+      return false;
+    }
+  });
+  const byText = candidates.find((link) => matchesKeyword(link.text, keywords));
+  if (byText) return byText.href;
+  const byPath = candidates.find((link) => {
+    try {
+      return matchesKeyword(decodeURIComponent(new URL(link.href).pathname), keywords);
+    } catch {
+      return false;
+    }
+  });
+  return byPath?.href ?? null;
+}
+
+function extractJsonLdOrganization(page: ScrapedPage): Record<string, unknown> | null {
+  for (const entry of page.seo.jsonLd) {
+    if (!entry || typeof entry !== "object") continue;
+    const type = (entry as Record<string, unknown>)["@type"];
+    const types = Array.isArray(type) ? type : [type];
+    if (types.some((t) => typeof t === "string" && /organization|localbusiness/i.test(t))) {
+      return entry as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+function formatAddress(address: unknown): string | null {
+  if (typeof address === "string") return address;
+  if (address && typeof address === "object") {
+    const a = address as Record<string, unknown>;
+    const parts = [a.streetAddress, a.postalCode, a.addressLocality, a.addressCountry]
+      .filter((p) => typeof p === "string" && p.length > 0);
+    if (parts.length > 0) return parts.join(", ");
+  }
+  return null;
+}
+
+const EMAIL_RE = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
+const PHONE_RE = /(\+?\d[\d /().-]{7,}\d)/;
+
+function extractContactInfo(page: ScrapedPage): Record<string, string> | null {
+  const org = extractJsonLdOrganization(page);
+  const info: Record<string, string> = {};
+  if (org) {
+    if (typeof org.name === "string") info.name = org.name;
+    if (typeof org.telephone === "string") info.phone = org.telephone;
+    if (typeof org.email === "string") info.email = org.email;
+    const address = formatAddress(org.address);
+    if (address) info.address = address;
+  }
+  if (!info.email) {
+    const email = EMAIL_RE.exec(page.fullText)?.[0];
+    if (email) info.email = email;
+  }
+  if (!info.phone) {
+    const phone = PHONE_RE.exec(page.fullText)?.[0]?.trim();
+    if (phone) info.phone = phone;
+  }
+  return Object.keys(info).length > 0 ? info : null;
+}
+
+/** Picks the longest, most substantial paragraphs as a stand-in for a page's "real content". */
+function summarizeParagraphs(page: ScrapedPage, maxChars = 1200): string | null {
+  if (page.paragraphs.length === 0) return null;
+  const text = page.paragraphs.join(" ").slice(0, maxChars);
+  return text.length > 0 ? text : null;
+}
+
+export async function scrapeOwnSite(url: string): Promise<OwnSiteContent> {
+  const home = await scrapePage(url);
+  let origin: string;
+  try {
+    origin = new URL(home.url).origin;
+  } catch {
+    origin = url;
+  }
+
+  const aboutUrl = findSubpageUrl(home, origin, ABOUT_KEYWORDS);
+  const servicesUrl = findSubpageUrl(home, origin, SERVICES_KEYWORDS);
+  const contactUrl = findSubpageUrl(home, origin, CONTACT_KEYWORDS);
+
+  const subpageUrls = Array.from(new Set([aboutUrl, servicesUrl, contactUrl].filter((u): u is string => !!u))).slice(
+    0,
+    MAX_OWN_SITE_SUBPAGES
+  );
+
+  const subpages = new Map<string, ScrapedPage>();
+  for (const subUrl of subpageUrls) {
+    try {
+      subpages.set(subUrl, await scrapePage(subUrl));
+    } catch (err) {
+      console.warn(`[OwnSite] Konnte Unterseite nicht laden: ${subUrl}`, err);
+    }
+  }
+
+  const aboutPage = (aboutUrl && subpages.get(aboutUrl)) || home;
+  const servicesPage = (servicesUrl && subpages.get(servicesUrl)) || null;
+  const contactPage = (contactUrl && subpages.get(contactUrl)) || home;
+
+  return {
+    title: home.title,
+    logoUrl: home.logoUrl,
+    brandColors: home.brandColors,
+    aboutText: summarizeParagraphs(aboutPage),
+    servicesText: servicesPage ? summarizeParagraphs(servicesPage) : null,
+    contactInfo: extractContactInfo(contactPage),
   };
 }

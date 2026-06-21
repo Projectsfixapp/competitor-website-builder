@@ -7,7 +7,7 @@ import JSON5 from "json5";
 import { DEFAULT_ACCENT_COLORS, DEFAULT_BACKGROUND_HEX } from "@shared/const";
 import { generateImageWithGemini } from "./geminiImages";
 import { callLLM, type LLMProvider } from "./llmAdapter";
-import type { ScrapedImage, ScrapedPage } from "./scraper";
+import type { OwnSiteContent, ScrapedImage, ScrapedPage } from "./scraper";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -159,7 +159,7 @@ async function callLLMForJson(
   );
 }
 
-export async function analyzeCompetitors(pages: ScrapedPage[], provider: LLMProvider = "manus"): Promise<CompetitorInsights> {
+export async function analyzeCompetitors(pages: ScrapedPage[], provider: LLMProvider = "claude"): Promise<CompetitorInsights> {
   const pagesText = pages
     .map((p, i) => {
       const seo = computeSeoSignals(p);
@@ -404,8 +404,9 @@ async function generateFallbackImages(context: string, tone: string): Promise<st
 export async function generateWebsite(
   insights: CompetitorInsights,
   pages: ScrapedPage[],
-  provider: LLMProvider = "manus",
-  theme: ResolvedTheme = { backgroundColor: DEFAULT_BACKGROUND_HEX, accentColors: DEFAULT_ACCENT_COLORS, logoUrl: null, images: [] }
+  provider: LLMProvider = "claude",
+  theme: ResolvedTheme = { backgroundColor: DEFAULT_BACKGROUND_HEX, accentColors: DEFAULT_ACCENT_COLORS, logoUrl: null, images: [] },
+  ownSiteContent: OwnSiteContent | null = null
 ): Promise<GeneratedWebsiteData> {
   const context = pages[0]?.title ?? insights.targetAudience;
   const availableImages =
@@ -437,6 +438,16 @@ ${rankingSummary}
     availableImages.length > 0
       ? `- Bilder: Verwende AUSSCHLIESSLICH diese ${availableImages.length} echten Bild-URLs für inhaltliche Fotos (Hero, Galerie, Team etc.) — erfinde KEINE eigenen Bild-URLs (auch keine Unsplash-Links, diese existieren nicht und führen zu kaputten Bildern):\n  ${availableImages.join("\n  ")}`
       : "- Bilder: Es liegen keine echten Fotos vor — verwende stattdessen bewusst Farbflächen, Verläufe in den Akzentfarben und Inline-SVG-Illustrationen statt Fotos. Erfinde KEINE Bild-URLs (auch keine Unsplash-Links), diese wären kaputt.";
+
+  const hasOwnSiteContent =
+    ownSiteContent &&
+    (ownSiteContent.aboutText || ownSiteContent.servicesText || ownSiteContent.contactInfo);
+  const ownSiteContentBlock = hasOwnSiteContent
+    ? `
+
+ECHTE INHALTE DES KUNDEN (von dessen eigener Website gescraped — PFLICHT wörtlich/sinngemäß übernehmen, NICHT durch erfundene Texte ersetzen):
+${ownSiteContent!.aboutText ? `Über uns / Wer wir sind:\n${ownSiteContent!.aboutText}\n` : ""}${ownSiteContent!.servicesText ? `Leistungen / Angebot:\n${ownSiteContent!.servicesText}\n` : ""}${ownSiteContent!.contactInfo ? `Kontakt/Impressum-Daten (im Footer/Kontakt-Bereich verwenden): ${JSON.stringify(ownSiteContent!.contactInfo)}\n` : ""}`
+    : "";
 
   const htmlContent_raw = await callLLM({
     provider,
@@ -485,11 +496,11 @@ SEITENSTRUKTUR (PFLICHT):
         content: `Erstelle eine überlegene, hochkonvertierende Website basierend auf dieser Mitbewerber-Analyse:
 
 ${insightsSummary}
-
+${ownSiteContentBlock}
 Wichtig:
 - Übernimm die besten Elemente aller Mitbewerber und mache sie BESSER
 - Übertriff besonders den Erstplatzierten im Ranking, und vermeide die genannten Schwächen aller Mitbewerber
-- Schreibe völlig neue, einzigartige Copy (kein Copy-Paste)
+- Schreibe völlig neue, einzigartige Copy (kein Copy-Paste) — AUSSER für die echten Kundeninhalte oben (Über uns/Leistungen/Kontakt), falls vorhanden: diese real übernehmen statt neu erfinden
 - Optimiere für SEO und Conversion
 - Alle Texte müssen contenteditable="true" haben
 - Gib NUR das vollständige HTML-Dokument zurück, ohne Markdown-Wrapper`,
@@ -577,7 +588,7 @@ export function validateAttachedImage(image: AttachedImage): void {
 export async function reviseWebsiteViaChat(
   currentHtml: string,
   message: string,
-  provider: LLMProvider = "manus",
+  provider: LLMProvider = "claude",
   attachedImage: AttachedImage | null = null
 ): Promise<ChatRevisionResult> {
   const imageInstruction = attachedImage

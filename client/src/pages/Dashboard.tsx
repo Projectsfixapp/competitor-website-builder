@@ -1,4 +1,6 @@
 import AppLayout from "@/components/AppLayout";
+import { AuthDialog } from "@/components/AuthDialog";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { formatDistanceToNow } from "date-fns";
@@ -10,9 +12,11 @@ import {
   Clock,
   FolderOpen,
   Loader2,
+  Lock,
   Plus,
   Trash2,
 } from "lucide-react";
+import { useState } from "react";
 import { Link } from "wouter";
 import { toast } from "sonner";
 
@@ -26,7 +30,11 @@ const statusConfig = {
 };
 
 export default function Dashboard() {
-  const { data: projects, isLoading, refetch } = trpc.projects.list.useQuery();
+  const { isAuthenticated, loading: authLoading } = useAuth();
+  const [authOpen, setAuthOpen] = useState(false);
+  const { data: projects, isLoading, refetch } = trpc.projects.list.useQuery(undefined, {
+    enabled: isAuthenticated,
+  });
   const deleteMutation = trpc.projects.delete.useMutation({
     onSuccess: () => {
       toast.success("Projekt gelöscht");
@@ -40,6 +48,29 @@ export default function Dashboard() {
       deleteMutation.mutate({ id });
     }
   };
+
+  if (!authLoading && !isAuthenticated) {
+    return (
+      <AppLayout title="Meine Projekte">
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <div className="w-16 h-16 bg-secondary rounded-2xl flex items-center justify-center mb-5">
+            <Lock size={26} className="text-muted-foreground" />
+          </div>
+          <h3 className="font-serif text-xl font-semibold mb-2">Anmelden, um Projekte zu sehen</h3>
+          <p className="text-muted-foreground text-sm max-w-xs mb-6">
+            Deine gespeicherten Analysen und generierten Websites sind an dein Konto gebunden.
+          </p>
+          <Button
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+            onClick={() => setAuthOpen(true)}
+          >
+            Anmelden / Registrieren
+          </Button>
+        </div>
+        <AuthDialog open={authOpen} onOpenChange={setAuthOpen} />
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout

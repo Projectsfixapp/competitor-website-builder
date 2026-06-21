@@ -1,5 +1,4 @@
 import {
-  boolean,
   int,
   json,
   longtext,
@@ -15,8 +14,18 @@ export const users = mysqlTable("users", {
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
+  passwordHash: varchar("passwordHash", { length: 255 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  // Brand assets captured once (from a customer's own-site scrape at project
+  // creation, copied here when an anonymous project is claimed) so future
+  // modules (CI, Druckdateien, Marketing, AI-Tools) can reuse them without
+  // re-asking the customer for their URL.
+  brandLogoUrl: varchar("brandLogoUrl", { length: 2048 }),
+  brandColors: json("brandColors").$type<string[]>(),
+  brandAboutText: text("brandAboutText"),
+  brandServicesText: text("brandServicesText"),
+  brandContactInfo: json("brandContactInfo").$type<Record<string, string>>(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -29,17 +38,34 @@ export type InsertUser = typeof users.$inferInsert;
 
 export const projects = mysqlTable("projects", {
   id: int("id").autoincrement().primaryKey(),
-  userId: int("userId").notNull(),
+  // Nullable: anonymous (not-yet-signed-up) visitors can create one free
+  // preview project, identified by anonymousId instead. See claimAnonymousProjects.
+  userId: int("userId"),
+  anonymousId: varchar("anonymousId", { length: 64 }),
   name: varchar("name", { length: 255 }).notNull(),
   status: mysqlEnum("status", ["pending", "scraping", "analyzing", "generating", "done", "error"])
     .default("pending")
     .notNull(),
-  llmProvider: mysqlEnum("llmProvider", ["manus", "gemini", "claude"])
-    .default("manus")
+  llmProvider: mysqlEnum("llmProvider", ["gemini", "claude"])
+    .default("claude")
     .notNull(),
   colorMode: mysqlEnum("colorMode", ["manual", "extract"]).default("manual").notNull(),
   backgroundColor: varchar("backgroundColor", { length: 16 }),
   accentColors: json("accentColors").$type<string[]>(),
+  // Customer's own website — kept separate from competitorUrls (which are
+  // always competitors now). Scraped independently so real Über-uns/Leistungen/
+  // Impressum content can be reused in the generated site instead of invented.
+  ownSiteUrl: varchar("ownSiteUrl", { length: 2048 }),
+  ownSiteData: json("ownSiteData").$type<{
+    title: string;
+    logoUrl: string | null;
+    brandColors: string[];
+    aboutText: string | null;
+    servicesText: string | null;
+    contactInfo: Record<string, string> | null;
+  }>(),
+  uploadedLogoUrl: varchar("uploadedLogoUrl", { length: 2048 }),
+  uploadedImageUrls: json("uploadedImageUrls").$type<string[]>(),
   errorMessage: text("errorMessage"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -54,7 +80,6 @@ export const competitorUrls = mysqlTable("competitor_urls", {
   id: int("id").autoincrement().primaryKey(),
   projectId: int("projectId").notNull(),
   url: text("url").notNull(),
-  isOwnSite: boolean("isOwnSite").default(false).notNull(),
   title: text("title"),
   scrapedContent: text("scrapedContent"),
   scrapedAt: timestamp("scrapedAt"),

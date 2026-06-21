@@ -1,8 +1,9 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { BACKGROUND_PRESETS, HEX_COLOR_PATTERN } from "@shared/const";
+import { BACKGROUND_PRESETS, HEX_COLOR_PATTERN, ONE_YEAR_MS } from "@shared/const";
 import { validateUrlShape } from "./_core/ssrf";
 import {
+  claimAnonymousProjects,
   createProject,
   deleteProject,
   getAnalysisResult,
@@ -11,12 +12,16 @@ import {
   getProjectById,
   getProjectsByUser,
   insertCompetitorUrls,
+  saveBrandAssetsToUser,
   updateCompetitorUrlScraped,
   updateGeneratedWebsiteHtml,
+  updateProjectOwnSiteData,
   updateProjectStatus,
   upsertAnalysisResult,
   upsertGeneratedWebsite,
+  countUnclaimedAnonymousProjects,
 } from "./db";
+import { auth as authService } from "./_core/auth";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import {
@@ -24,14 +29,78 @@ import {
   reviseWebsiteViaChat,
   validateAttachedImage,
 } from "./pipeline";
+import { uploadDataUrl } from "./storage";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import type { TrpcContext } from "./_core/context";
+
+/** An anonymous (not-yet-signed-up) visitor owns a project via the anonymousId cookie; a signed-in user via userId. */
+function canAccessProject(
+  project: { userId: number | null; anonymousId: string | null },
+  ctx: TrpcContext
+): boolean {
+  if (ctx.user) return project.userId === ctx.user.id;
+  return project.userId === null && project.anonymousId === ctx.anonymousId;
+}
+
+async function claimAndCopyBrandAssets(ctx: TrpcContext, userId: number) {
+  const claimed = await claimAnonymousProjects(ctx.anonymousId, userId);
+  const ownSiteData = claimed.find((p) => p.ownSiteData)?.ownSiteData;
+  if (ownSiteData) {
+    await saveBrandAssetsToUser(userId, {
+      logoUrl: ownSiteData.logoUrl,
+      brandColors: ownSiteData.brandColors,
+      aboutText: ownSiteData.aboutText,
+      servicesText: ownSiteData.servicesText,
+      contactInfo: ownSiteData.contactInfo,
+    });
+  }
+}
 
 export const appRouter = router({
   system: systemRouter,
 
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
+
+    register: publicProcedure
+      .input(
+        z.object({
+          email: z.string().email().max(320),
+          password: z.string().min(8).max(255),
+          name: z.string().min(1).max(255),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const result = await authService.register(input.email, input.password, input.name);
+        if (!result) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Diese E-Mail-Adresse ist bereits registriert.",
+          });
+        }
+        await claimAndCopyBrandAssets(ctx, result.user.id);
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, result.token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+        return { success: true, user: result.user } as const;
+      }),
+
+    login: publicProcedure
+      .input(z.object({ email: z.string().email().max(320), password: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await authService.login(input.email, input.password);
+        if (!result) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "E-Mail oder Passwort ist falsch.",
+          });
+        }
+        await claimAndCopyBrandAssets(ctx, result.user.id);
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, result.token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+        return { success: true, user: result.user } as const;
+      }),
+
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -46,11 +115,11 @@ export const appRouter = router({
       return getProjectsByUser(ctx.user.id);
     }),
 
-    get: protectedProcedure
+    get: publicProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
         const project = await getProjectById(input.id);
-        if (!project || project.userId !== ctx.user.id) {
+        if (!project || !canAccessProject(project, ctx)) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
         const urls = await getCompetitorUrlsByProject(input.id);
@@ -59,24 +128,13 @@ export const appRouter = router({
         return { project, urls, analysis, website };
       }),
 
-    create: protectedProcedure
+    create: publicProcedure
       .input(
         z.object({
           name: z.string().min(1).max(255),
-          urls: z
-            .array(
-              z.object({
-                url: z.string().url(),
-                isOwnSite: z.boolean().default(false),
-              })
-            )
-            .min(1)
-            .max(7)
-            .refine(urls => urls.filter(u => u.isOwnSite).length <= 1, {
-              message:
-                "Nur eine URL kann als deine eigene Website markiert werden.",
-            }),
-          llmProvider: z.enum(["manus", "gemini", "claude"]).default("manus"),
+          competitorUrls: z.array(z.string().url()).min(1).max(7),
+          ownSiteUrl: z.string().url().optional(),
+          llmProvider: z.enum(["gemini", "claude"]).default("claude"),
           colorMode: z.enum(["manual", "extract"]).default("manual"),
           backgroundColor: z.string().regex(HEX_COLOR_PATTERN).optional(),
           accentColors: z
@@ -84,27 +142,29 @@ export const appRouter = router({
             .min(1)
             .max(3)
             .optional(),
+          logoImage: z.object({ dataUrl: z.string(), mimeType: z.string() }).optional(),
+          images: z
+            .array(z.object({ dataUrl: z.string(), mimeType: z.string() }))
+            .max(5)
+            .optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        for (const { url } of input.urls) {
+        for (const url of [...input.competitorUrls, ...(input.ownSiteUrl ? [input.ownSiteUrl] : [])]) {
           try {
             validateUrlShape(url);
           } catch (err) {
             throw new TRPCError({
               code: "BAD_REQUEST",
-              message:
-                err instanceof Error ? err.message : `Ungültige URL: ${url}`,
+              message: err instanceof Error ? err.message : `Ungültige URL: ${url}`,
             });
           }
         }
 
-        const hasOwnSite = input.urls.some(u => u.isOwnSite);
-        if (input.colorMode === "extract" && !hasOwnSite) {
+        if (input.colorMode === "extract" && !input.ownSiteUrl) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message:
-              "Markiere eine URL als deine eigene Website, um Farben von dort zu übernehmen.",
+            message: "Gib deine eigene Website an, um Farben von dort zu übernehmen.",
           });
         }
         if (
@@ -120,23 +180,57 @@ export const appRouter = router({
           });
         }
 
-        const projectId = await createProject(
-          ctx.user.id,
-          input.name,
-          input.llmProvider,
-          {
-            colorMode: input.colorMode,
-            backgroundColor:
-              input.colorMode === "manual"
-                ? (input.backgroundColor ?? null)
-                : null,
-            accentColors:
-              input.colorMode === "manual"
-                ? (input.accentColors ?? null)
-                : null,
+        if (!ctx.user) {
+          const existing = await countUnclaimedAnonymousProjects(ctx.anonymousId);
+          if (existing >= 1) {
+            throw new TRPCError({
+              code: "TOO_MANY_REQUESTS",
+              message:
+                "Du hast bereits deine kostenlose Analyse gestartet. Melde dich an, um weitere Projekte zu erstellen.",
+            });
           }
-        );
-        await insertCompetitorUrls(projectId, input.urls);
+        }
+
+        let uploadedLogoUrl: string | null = null;
+        if (input.logoImage) {
+          try {
+            uploadedLogoUrl = await uploadDataUrl("logos", input.logoImage);
+          } catch (err) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: err instanceof Error ? err.message : "Logo-Upload fehlgeschlagen.",
+            });
+          }
+        }
+
+        let uploadedImageUrls: string[] | null = null;
+        if (input.images && input.images.length > 0) {
+          try {
+            uploadedImageUrls = await Promise.all(
+              input.images.map(img => uploadDataUrl("images", img))
+            );
+          } catch (err) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: err instanceof Error ? err.message : "Bild-Upload fehlgeschlagen.",
+            });
+          }
+        }
+
+        const projectId = await createProject({
+          userId: ctx.user?.id ?? null,
+          anonymousId: ctx.user ? null : ctx.anonymousId,
+          name: input.name,
+          llmProvider: input.llmProvider,
+          colorMode: input.colorMode,
+          backgroundColor:
+            input.colorMode === "manual" ? (input.backgroundColor ?? null) : null,
+          accentColors: input.colorMode === "manual" ? (input.accentColors ?? null) : null,
+          ownSiteUrl: input.ownSiteUrl ?? null,
+          uploadedLogoUrl,
+          uploadedImageUrls,
+        });
+        await insertCompetitorUrls(projectId, input.competitorUrls);
         return { projectId };
       }),
 
@@ -199,10 +293,7 @@ export const appRouter = router({
           }
         }
 
-        const provider = (project.llmProvider ?? "manus") as
-          | "manus"
-          | "gemini"
-          | "claude";
+        const provider = (project.llmProvider ?? "claude") as "gemini" | "claude";
         const result = await reviseWebsiteViaChat(
           website.htmlContent,
           input.message,
@@ -226,8 +317,9 @@ export type AppRouter = typeof appRouter;
 // Registered in server/_core/index.ts via registerAnalysisRoute()
 
 import type { Express, Request, Response } from "express";
-import { sdk } from "./_core/sdk";
-import { scrapePage } from "./scraper";
+import { ANON_COOKIE_NAME } from "@shared/const";
+import { parse as parseCookieHeader } from "cookie";
+import { scrapeOwnSite, scrapePage } from "./scraper";
 import { analyzeCompetitors, generateWebsite, resolveTheme } from "./pipeline";
 
 /** Extracted from registerAnalysisRoute so it can be unit/e2e-tested directly with mock req/res, without spinning up a real Express server. */
@@ -235,29 +327,16 @@ export async function handleAnalyzeRequest(
   req: Request,
   res: Response
 ): Promise<void> {
-  // Auth check
-  const cookieHeader = req.headers.cookie ?? "";
-  const cookies = Object.fromEntries(
-    cookieHeader.split(";").map(c => {
-      const [k, ...v] = c.trim().split("=");
-      return [k?.trim() ?? "", v.join("=")];
-    })
-  );
-  const sessionToken = cookies[COOKIE_NAME];
-  if (!sessionToken) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-
-  let userId: number;
+  let userId: number | null = null;
   try {
-    const user = await sdk.authenticateRequest(req);
-    if (!user) throw new Error("No user");
+    const user = await authService.authenticateRequest(req);
     userId = user.id;
   } catch {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
+    userId = null;
   }
+
+  const cookies = parseCookieHeader(req.headers.cookie ?? "");
+  const anonymousId = cookies[ANON_COOKIE_NAME] ?? null;
 
   const projectId = parseInt(req.params.projectId ?? "0", 10);
   if (!projectId) {
@@ -266,7 +345,12 @@ export async function handleAnalyzeRequest(
   }
 
   const project = await getProjectById(projectId);
-  if (!project || project.userId !== userId) {
+  const owns =
+    !!project &&
+    (userId !== null
+      ? project.userId === userId
+      : project.userId === null && project.anonymousId === anonymousId);
+  if (!project || !owns) {
     res.status(404).json({ error: "Project not found" });
     return;
   }
@@ -283,6 +367,25 @@ export async function handleAnalyzeRequest(
   };
 
   try {
+    // ── Step 0: Own-site scraping (separate from competitors) ──────────────
+    let ownSiteContent: Awaited<ReturnType<typeof scrapeOwnSite>> | null = null;
+    if (project.ownSiteUrl) {
+      send("status", {
+        step: "scraping",
+        message: "Scrappe deine eigene Website…",
+        progress: 2,
+      });
+      try {
+        ownSiteContent = await scrapeOwnSite(project.ownSiteUrl);
+        await updateProjectOwnSiteData(projectId, ownSiteContent);
+      } catch (err) {
+        send("warning", {
+          url: project.ownSiteUrl,
+          message: `Eigene Website konnte nicht gescrapt werden: ${String(err)}`,
+        });
+      }
+    }
+
     // ── Step 1: Scraping ──────────────────────────────────────────────────
     await updateProjectStatus(projectId, "scraping");
     const urlRows = await getCompetitorUrlsByProject(projectId);
@@ -331,13 +434,10 @@ export async function handleAnalyzeRequest(
       progress: 40,
     });
 
-    const provider = (project.llmProvider ?? "manus") as
-      | "manus"
-      | "gemini"
-      | "claude";
+    const provider = (project.llmProvider ?? "claude") as "gemini" | "claude";
     send("status", {
       step: "analyzing",
-      message: `Analysiere mit ${provider === "gemini" ? "Gemini" : provider === "claude" ? "Claude" : "Manus"}…`,
+      message: `Analysiere mit ${provider === "gemini" ? "Gemini" : "Claude"}…`,
       progress: 42,
     });
 
@@ -355,11 +455,10 @@ export async function handleAnalyzeRequest(
     await updateProjectStatus(projectId, "generating");
     send("status", {
       step: "generating",
-      message: `Generiere Website mit ${provider === "gemini" ? "Gemini" : provider === "claude" ? "Claude" : "Manus"}…`,
+      message: `Generiere Website mit ${provider === "gemini" ? "Gemini" : "Claude"}…`,
       progress: 70,
     });
 
-    const ownSiteUrl = urlRows.find(r => r.isOwnSite)?.url ?? null;
     const theme = resolveTheme(
       {
         colorMode: project.colorMode ?? "manual",
@@ -367,14 +466,19 @@ export async function handleAnalyzeRequest(
         accentColors: project.accentColors ?? null,
       },
       scrapedPages,
-      ownSiteUrl
+      project.ownSiteUrl ?? null
     );
+    if (project.uploadedLogoUrl) theme.logoUrl = project.uploadedLogoUrl;
+    if (project.uploadedImageUrls?.length) {
+      theme.images = [...project.uploadedImageUrls, ...theme.images];
+    }
 
     const websiteData = await generateWebsite(
       insights,
       scrapedPages,
       provider,
-      theme
+      theme,
+      ownSiteContent
     );
     await upsertGeneratedWebsite(
       projectId,

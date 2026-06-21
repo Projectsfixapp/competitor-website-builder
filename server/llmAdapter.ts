@@ -1,12 +1,10 @@
 /**
  * Universal LLM Adapter
- * Supports Manus built-in, Google Gemini, and Anthropic Claude.
+ * Supports Google Gemini and Anthropic Claude.
  * Provider is selected per-request via the `provider` parameter.
  */
 
-import { invokeLLM } from "./_core/llm";
-
-export type LLMProvider = "manus" | "gemini" | "claude";
+export type LLMProvider = "gemini" | "claude";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -17,18 +15,6 @@ export interface LLMOptions {
   provider: LLMProvider;
   messages: LLMMessage[];
   responseFormat?: "json" | "text";
-}
-
-// ─── Manus (built-in) ─────────────────────────────────────────────────────────
-
-async function callManus(messages: LLMMessage[], responseFormat: "json" | "text"): Promise<string> {
-  const opts: Parameters<typeof invokeLLM>[0] = { messages };
-  if (responseFormat === "json") {
-    opts.response_format = { type: "json_object" } as { type: "json_object" };
-  }
-  const response = await invokeLLM(opts);
-  const content = response.choices[0]?.message?.content;
-  return typeof content === "string" ? content : "";
 }
 
 // ─── Google Gemini ────────────────────────────────────────────────────────────
@@ -128,11 +114,8 @@ export async function callLLM(opts: LLMOptions): Promise<string> {
     case "gemini":
       raw = await callGemini(messages, responseFormat);
       break;
-    case "claude":
-      raw = await callClaude(messages, responseFormat);
-      break;
     default:
-      raw = await callManus(messages, responseFormat);
+      raw = await callClaude(messages, responseFormat);
   }
 
   // Strip markdown code fences if present
@@ -145,13 +128,11 @@ export async function callLLM(opts: LLMOptions): Promise<string> {
 // ─── Provider Labels ──────────────────────────────────────────────────────────
 
 export const PROVIDER_LABELS: Record<LLMProvider, string> = {
-  manus: "Manus (Built-in)",
   gemini: "Google Gemini 2.5 Flash",
   claude: "Anthropic Claude Sonnet",
 };
 
 export const PROVIDER_DESCRIPTIONS: Record<LLMProvider, string> = {
-  manus: "Nutzt das eingebaute Manus-Modell. Kein eigener API-Key nötig.",
   gemini: "Schnell & günstig. Benötigt GEMINI_API_KEY.",
   claude: "Bester HTML-Output. Benötigt ANTHROPIC_API_KEY.",
 };

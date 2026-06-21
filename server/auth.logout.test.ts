@@ -15,11 +15,17 @@ function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] }
 
   const user: AuthenticatedUser = {
     id: 1,
-    openId: "sample-user",
+    openId: "sample@example.com",
     email: "sample@example.com",
     name: "Sample User",
-    loginMethod: "manus",
+    passwordHash: null,
+    loginMethod: "password",
     role: "user",
+    brandLogoUrl: null,
+    brandColors: null,
+    brandAboutText: null,
+    brandServicesText: null,
+    brandContactInfo: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     lastSignedIn: new Date(),
@@ -27,6 +33,7 @@ function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] }
 
   const ctx: TrpcContext = {
     user,
+    anonymousId: "test-anon-id",
     req: {
       protocol: "https",
       headers: {},

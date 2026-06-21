@@ -5,18 +5,23 @@
  * The underlying functions (scrapePage, analyzeCompetitors, generateWebsite,
  * the SSRF guard) already have their own unit tests; this file verifies the
  * ROUTE'S control flow: event sequencing, status persistence, auth/ownership
- * checks, and graceful degradation on partial/total failure.
+ * checks (incl. anonymous/unclaimed projects), and graceful degradation on
+ * partial/total failure.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Request, Response } from "express";
-import { COOKIE_NAME } from "@shared/const";
+import { ANON_COOKIE_NAME, COOKIE_NAME } from "@shared/const";
 import type { ScrapedPage } from "./scraper";
 
-const sdkMock = vi.hoisted(() => ({ authenticateRequest: vi.fn() }));
-vi.mock("./_core/sdk", () => ({ sdk: sdkMock }));
+const authMock = vi.hoisted(() => ({ authenticateRequest: vi.fn() }));
+vi.mock("./_core/auth", () => ({ auth: authMock }));
 
 const scrapePageMock = vi.fn();
-vi.mock("./scraper", () => ({ scrapePage: (...args: unknown[]) => scrapePageMock(...args) }));
+const scrapeOwnSiteMock = vi.fn();
+vi.mock("./scraper", () => ({
+  scrapePage: (...args: unknown[]) => scrapePageMock(...args),
+  scrapeOwnSite: (...args: unknown[]) => scrapeOwnSiteMock(...args),
+}));
 
 const analyzeCompetitorsMock = vi.fn();
 const generateWebsiteMock = vi.fn();
@@ -40,6 +45,7 @@ const dbMock = vi.hoisted(() => ({
   getCompetitorUrlsByProject: vi.fn(),
   updateProjectStatus: vi.fn().mockResolvedValue(undefined),
   updateCompetitorUrlScraped: vi.fn().mockResolvedValue(undefined),
+  updateProjectOwnSiteData: vi.fn().mockResolvedValue(undefined),
   upsertAnalysisResult: vi.fn().mockResolvedValue(undefined),
   upsertGeneratedWebsite: vi.fn().mockResolvedValue(undefined),
 }));
@@ -73,6 +79,7 @@ function makePage(overrides: Partial<ScrapedPage> = {}): ScrapedPage {
       jsonLd: [],
     },
     sitemapUrls: [],
+    links: [],
     fullText: "",
     brandColors: [],
     logoUrl: null,
@@ -88,10 +95,18 @@ function parseSseEvents(writes: string[]): Array<{ event: string; data: unknown 
   });
 }
 
-function createMockReqRes(opts: { cookie?: string | null; projectId?: string } = {}) {
-  const cookie = opts.cookie === null ? "" : opts.cookie ?? `${COOKIE_NAME}=valid-session-token`;
+function createMockReqRes(
+  opts: { cookie?: string | null; anonymousId?: string | null; projectId?: string } = {}
+) {
+  const cookieParts: string[] = [];
+  if (opts.cookie !== null) {
+    cookieParts.push(opts.cookie ?? `${COOKIE_NAME}=valid-session-token`);
+  }
+  if (opts.anonymousId) {
+    cookieParts.push(`${ANON_COOKIE_NAME}=${opts.anonymousId}`);
+  }
   const req = {
-    headers: { cookie },
+    headers: { cookie: cookieParts.join("; ") },
     params: { projectId: opts.projectId ?? "1" },
   } as unknown as Request;
 
@@ -128,12 +143,17 @@ function createMockReqRes(opts: { cookie?: string | null; projectId?: string } =
 const BASE_PROJECT = {
   id: 1,
   userId: 42,
+  anonymousId: null,
   name: "Test Projekt",
   status: "pending" as const,
-  llmProvider: "manus" as const,
+  llmProvider: "claude" as const,
   colorMode: "manual" as const,
   backgroundColor: null,
   accentColors: null,
+  ownSiteUrl: null,
+  ownSiteData: null,
+  uploadedLogoUrl: null,
+  uploadedImageUrls: null,
   errorMessage: null,
   createdAt: new Date("2026-01-01"),
   updatedAt: new Date("2026-01-01"),
@@ -153,13 +173,21 @@ const BASE_INSIGHTS = {
 describe("handleAnalyzeRequest (E2E pipeline orchestration)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    sdkMock.authenticateRequest.mockResolvedValue({ id: 42 });
+    authMock.authenticateRequest.mockResolvedValue({ id: 42 });
     dbMock.getProjectById.mockResolvedValue(BASE_PROJECT);
     dbMock.getCompetitorUrlsByProject.mockResolvedValue([
-      { id: 1, projectId: 1, url: "https://a.example", isOwnSite: false, title: null, scrapedContent: null, scrapedAt: null, createdAt: new Date() },
-      { id: 2, projectId: 1, url: "https://b.example", isOwnSite: false, title: null, scrapedContent: null, scrapedAt: null, createdAt: new Date() },
+      { id: 1, projectId: 1, url: "https://a.example", title: null, scrapedContent: null, scrapedAt: null, createdAt: new Date() },
+      { id: 2, projectId: 1, url: "https://b.example", title: null, scrapedContent: null, scrapedAt: null, createdAt: new Date() },
     ]);
     scrapePageMock.mockImplementation(async (url: string) => makePage({ url, title: `Titel von ${url}` }));
+    scrapeOwnSiteMock.mockResolvedValue({
+      title: "Eigene Seite",
+      logoUrl: null,
+      brandColors: [],
+      aboutText: null,
+      servicesText: null,
+      contactInfo: null,
+    });
     analyzeCompetitorsMock.mockResolvedValue(BASE_INSIGHTS);
     resolveThemeMock.mockReturnValue({ backgroundColor: "#FAFAF9", accentColors: ["#C8A96E"], logoUrl: null, images: [] });
     generateWebsiteMock.mockResolvedValue({ htmlContent: "<!DOCTYPE html><html><body>OK</body></html>", configJson: {} });
@@ -192,38 +220,64 @@ describe("handleAnalyzeRequest (E2E pipeline orchestration)", () => {
     expect(dbMock.upsertAnalysisResult).toHaveBeenCalledWith(1, BASE_INSIGHTS);
     expect(dbMock.upsertGeneratedWebsite).toHaveBeenCalledWith(1, expect.stringContaining("<!DOCTYPE"), {});
     expect(res.end).toHaveBeenCalled();
+    expect(scrapeOwnSiteMock).not.toHaveBeenCalled();
   });
 
-  it("passes the marked own-site URL through to resolveTheme", async () => {
-    dbMock.getCompetitorUrlsByProject.mockResolvedValue([
-      { id: 1, projectId: 1, url: "https://own.example", isOwnSite: true, title: null, scrapedContent: null, scrapedAt: null, createdAt: new Date() },
-      { id: 2, projectId: 1, url: "https://competitor.example", isOwnSite: false, title: null, scrapedContent: null, scrapedAt: null, createdAt: new Date() },
-    ]);
+  it("scrapes the own site separately and passes its URL + content through to theme resolution and generation", async () => {
+    dbMock.getProjectById.mockResolvedValue({ ...BASE_PROJECT, ownSiteUrl: "https://own.example" });
+    const ownSiteContent = {
+      title: "Eigene Seite",
+      logoUrl: "https://own.example/logo.png",
+      brandColors: ["#112233"],
+      aboutText: "Wir sind ein Familienbetrieb seit 1990.",
+      servicesText: "Tiefbau, Hochbau, Sanierung.",
+      contactInfo: { email: "info@own.example" },
+    };
+    scrapeOwnSiteMock.mockResolvedValue(ownSiteContent);
+
     const { req, res } = createMockReqRes();
     await handleAnalyzeRequest(req, res);
 
+    expect(scrapeOwnSiteMock).toHaveBeenCalledWith("https://own.example");
+    expect(dbMock.updateProjectOwnSiteData).toHaveBeenCalledWith(1, ownSiteContent);
     expect(resolveThemeMock).toHaveBeenCalledWith(
       expect.objectContaining({ colorMode: "manual" }),
       expect.any(Array),
       "https://own.example"
     );
+    expect(generateWebsiteMock).toHaveBeenCalledWith(
+      BASE_INSIGHTS,
+      expect.any(Array),
+      "claude",
+      expect.anything(),
+      ownSiteContent
+    );
   });
 
-  it("rejects requests with no session cookie (401)", async () => {
-    const { req, res, statusCalls, jsonCalls } = createMockReqRes({ cookie: null });
+  it("allows an anonymous (not-yet-signed-up) visitor who owns the project via the anonymousId cookie", async () => {
+    authMock.authenticateRequest.mockRejectedValue(new Error("no session"));
+    dbMock.getProjectById.mockResolvedValue({ ...BASE_PROJECT, userId: null, anonymousId: "anon-123" });
+    const { req, res, statusCalls } = createMockReqRes({ cookie: null, anonymousId: "anon-123" });
     await handleAnalyzeRequest(req, res);
 
-    expect(statusCalls).toEqual([401]);
-    expect(jsonCalls[0]).toEqual({ error: "Unauthorized" });
-    expect(sdkMock.authenticateRequest).not.toHaveBeenCalled();
+    expect(statusCalls).toEqual([]);
   });
 
-  it("rejects requests where session verification fails (401)", async () => {
-    sdkMock.authenticateRequest.mockRejectedValue(new Error("invalid token"));
-    const { req, res, statusCalls } = createMockReqRes();
+  it("rejects an anonymous visitor whose anonymousId doesn't match the project (404)", async () => {
+    authMock.authenticateRequest.mockRejectedValue(new Error("no session"));
+    dbMock.getProjectById.mockResolvedValue({ ...BASE_PROJECT, userId: null, anonymousId: "anon-123" });
+    const { req, res, statusCalls } = createMockReqRes({ cookie: null, anonymousId: "someone-else" });
     await handleAnalyzeRequest(req, res);
 
-    expect(statusCalls).toEqual([401]);
+    expect(statusCalls).toEqual([404]);
+  });
+
+  it("rejects a request with neither a valid session nor a matching anonymousId (404)", async () => {
+    authMock.authenticateRequest.mockRejectedValue(new Error("invalid token"));
+    const { req, res, statusCalls } = createMockReqRes({ cookie: null });
+    await handleAnalyzeRequest(req, res);
+
+    expect(statusCalls).toEqual([404]);
   });
 
   it("rejects an invalid projectId (400)", async () => {

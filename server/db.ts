@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -26,68 +26,94 @@ export async function getDb() {
 
 // ─── Users ────────────────────────────────────────────────────────────────────
 
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) throw new Error("User openId is required for upsert");
+export async function createUser(user: InsertUser): Promise<number> {
   const db = await getDb();
-  if (!db) return;
-
-  const values: InsertUser = { openId: user.openId };
-  const updateSet: Record<string, unknown> = {};
-
-  const textFields = ["name", "email", "loginMethod"] as const;
-  for (const field of textFields) {
-    const value = user[field];
-    if (value === undefined) continue;
-    const normalized = value ?? null;
-    values[field] = normalized;
-    updateSet[field] = normalized;
-  }
-  if (user.lastSignedIn !== undefined) {
-    values.lastSignedIn = user.lastSignedIn;
-    updateSet.lastSignedIn = user.lastSignedIn;
-  }
-  if (user.role !== undefined) {
-    values.role = user.role;
-    updateSet.role = user.role;
-  } else if (user.openId === ENV.ownerOpenId) {
-    values.role = "admin";
-    updateSet.role = "admin";
-  }
-  if (!values.lastSignedIn) values.lastSignedIn = new Date();
-  if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
-
-  await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
+  if (!db) throw new Error("DB not available");
+  const isOwner =
+    ENV.ownerEmail.length > 0 && user.email?.toLowerCase() === ENV.ownerEmail.toLowerCase();
+  const result = await db.insert(users).values({
+    ...user,
+    role: isOwner ? "admin" : "user",
+    lastSignedIn: new Date(),
+  });
+  return result[0].insertId as number;
 }
 
-export async function getUserByOpenId(openId: string) {
+export async function getUserById(id: number) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
+  const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  return result[0];
+}
+
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return result[0];
+}
+
+export async function touchLastSignedIn(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, id));
+}
+
+/** Copies a claimed project's own-site brand assets onto the user record, for reuse by future modules. */
+export async function saveBrandAssetsToUser(
+  userId: number,
+  assets: {
+    logoUrl: string | null;
+    brandColors: string[] | null;
+    aboutText: string | null;
+    servicesText: string | null;
+    contactInfo: Record<string, string> | null;
+  }
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db
+    .update(users)
+    .set({
+      brandLogoUrl: assets.logoUrl,
+      brandColors: assets.brandColors,
+      brandAboutText: assets.aboutText,
+      brandServicesText: assets.servicesText,
+      brandContactInfo: assets.contactInfo,
+    })
+    .where(eq(users.id, userId));
 }
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
-export async function createProject(
-  userId: number,
-  name: string,
-  llmProvider: "manus" | "gemini" | "claude" = "manus",
-  theme: { colorMode: "manual" | "extract"; backgroundColor: string | null; accentColors: string[] | null } = {
-    colorMode: "manual",
-    backgroundColor: null,
-    accentColors: null,
-  }
-) {
+export type CreateProjectInput = {
+  userId: number | null;
+  anonymousId: string | null;
+  name: string;
+  llmProvider: "gemini" | "claude";
+  colorMode: "manual" | "extract";
+  backgroundColor: string | null;
+  accentColors: string[] | null;
+  ownSiteUrl: string | null;
+  uploadedLogoUrl: string | null;
+  uploadedImageUrls: string[] | null;
+};
+
+export async function createProject(input: CreateProjectInput) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
   const result = await db.insert(projects).values({
-    userId,
-    name,
+    userId: input.userId,
+    anonymousId: input.anonymousId,
+    name: input.name,
     status: "pending",
-    llmProvider,
-    colorMode: theme.colorMode,
-    backgroundColor: theme.backgroundColor,
-    accentColors: theme.accentColors,
+    llmProvider: input.llmProvider,
+    colorMode: input.colorMode,
+    backgroundColor: input.backgroundColor,
+    accentColors: input.accentColors,
+    ownSiteUrl: input.ownSiteUrl,
+    uploadedLogoUrl: input.uploadedLogoUrl,
+    uploadedImageUrls: input.uploadedImageUrls,
   });
   return result[0].insertId as number;
 }
@@ -103,6 +129,49 @@ export async function getProjectById(id: number) {
   if (!db) return undefined;
   const result = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
   return result[0];
+}
+
+/** One free, unclaimed analysis per anonymous visitor — additional ones require an account. */
+export async function countUnclaimedAnonymousProjects(anonymousId: string): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(projects)
+    .where(and(eq(projects.anonymousId, anonymousId), isNull(projects.userId)));
+  return Number(result[0]?.count ?? 0);
+}
+
+/** Attaches any unclaimed anonymous projects to a newly registered/logged-in user, returning what was claimed. */
+export async function claimAnonymousProjects(anonymousId: string, userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const unclaimed = await db
+    .select()
+    .from(projects)
+    .where(and(eq(projects.anonymousId, anonymousId), isNull(projects.userId)));
+  if (unclaimed.length === 0) return [];
+  await db
+    .update(projects)
+    .set({ userId, anonymousId: null })
+    .where(and(eq(projects.anonymousId, anonymousId), isNull(projects.userId)));
+  return unclaimed;
+}
+
+export async function updateProjectOwnSiteData(
+  id: number,
+  ownSiteData: {
+    title: string;
+    logoUrl: string | null;
+    brandColors: string[];
+    aboutText: string | null;
+    servicesText: string | null;
+    contactInfo: Record<string, string> | null;
+  }
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(projects).set({ ownSiteData }).where(eq(projects.id, id));
 }
 
 export async function updateProjectStatus(
@@ -129,14 +198,11 @@ export async function deleteProject(id: number) {
 
 // ─── Competitor URLs ──────────────────────────────────────────────────────────
 
-export async function insertCompetitorUrls(
-  projectId: number,
-  urls: Array<{ url: string; isOwnSite: boolean }>
-) {
+export async function insertCompetitorUrls(projectId: number, urls: string[]) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  for (const { url, isOwnSite } of urls) {
-    await db.insert(competitorUrls).values({ projectId, url, isOwnSite });
+  for (const url of urls) {
+    await db.insert(competitorUrls).values({ projectId, url });
   }
 }
 

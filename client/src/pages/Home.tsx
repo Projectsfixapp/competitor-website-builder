@@ -1,5 +1,3 @@
-import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import { ArrowRight, BarChart3, Globe, Layers, Sparkles, Zap } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -38,8 +36,6 @@ const features = [
 ];
 
 export default function Home() {
-  const { isAuthenticated, loading } = useAuth();
-
   return (
     <div className="min-h-screen bg-background">
       {/* ── Nav ──────────────────────────────────────────────────────────── */}
@@ -51,23 +47,11 @@ export default function Home() {
           <span className="font-serif text-base font-semibold">Competitor Website Builder</span>
         </div>
         <div className="flex items-center gap-3">
-          {!loading && (
-            isAuthenticated ? (
-              <Link href="/dashboard">
-                <Button size="sm" className="bg-primary text-primary-foreground hover:bg-primary/90">
-                  Dashboard öffnen <ArrowRight size={14} className="ml-1.5" />
-                </Button>
-              </Link>
-            ) : (
-              <Button
-                size="sm"
-                className="bg-primary text-primary-foreground hover:bg-primary/90"
-                onClick={() => (window.location.href = getLoginUrl())}
-              >
-                Kostenlos starten
-              </Button>
-            )
-          )}
+          <Link href="/new">
+            <Button size="sm" className="bg-primary text-primary-foreground hover:bg-primary/90">
+              Kostenlos starten <ArrowRight size={14} className="ml-1.5" />
+            </Button>
+          </Link>
         </div>
       </nav>
 
@@ -84,31 +68,19 @@ export default function Home() {
         </h1>
         <p className="text-lg text-muted-foreground max-w-2xl mx-auto leading-relaxed mb-10">
           Gib Mitbewerber-URLs ein – das Tool scraped, analysiert und generiert automatisch eine
-          überlegene, hochkonvertierende Website. Inklusive Inline-Editing und HTML-Export.
+          überlegene, hochkonvertierende Website. Deine erste Analyse ist kostenlos, kein Konto nötig.
         </p>
         <div className="flex items-center justify-center gap-3 flex-wrap">
-          {isAuthenticated ? (
-            <Link href="/new">
-              <Button size="lg" className="bg-primary text-primary-foreground hover:bg-primary/90 px-8">
-                Neue Analyse starten <ArrowRight size={16} className="ml-2" />
-              </Button>
-            </Link>
-          ) : (
-            <Button
-              size="lg"
-              className="bg-primary text-primary-foreground hover:bg-primary/90 px-8"
-              onClick={() => (window.location.href = getLoginUrl())}
-            >
+          <Link href="/new">
+            <Button size="lg" className="bg-primary text-primary-foreground hover:bg-primary/90 px-8">
               Jetzt kostenlos starten <ArrowRight size={16} className="ml-2" />
             </Button>
-          )}
-          {isAuthenticated && (
-            <Link href="/dashboard">
-              <Button size="lg" variant="outline" className="px-8">
-                Meine Projekte
-              </Button>
-            </Link>
-          )}
+          </Link>
+          <Link href="/dashboard">
+            <Button size="lg" variant="outline" className="px-8">
+              Meine Projekte
+            </Button>
+          </Link>
         </div>
       </section>
 
@@ -146,23 +118,13 @@ export default function Home() {
             Bereit, deine Mitbewerber zu übertreffen?
           </h2>
           <p className="text-primary-foreground/70 mb-8 max-w-md mx-auto">
-            Starte jetzt deine erste Analyse – kostenlos, ohne Kreditkarte.
+            Starte jetzt deine erste Analyse – kostenlos, ohne Kreditkarte, ohne Anmeldung.
           </p>
-          {isAuthenticated ? (
-            <Link href="/new">
-              <Button size="lg" className="bg-white text-primary hover:bg-white/90 px-8">
-                Analyse starten <ArrowRight size={16} className="ml-2" />
-              </Button>
-            </Link>
-          ) : (
-            <Button
-              size="lg"
-              className="bg-white text-primary hover:bg-white/90 px-8"
-              onClick={() => (window.location.href = getLoginUrl())}
-            >
-              Kostenlos starten <ArrowRight size={16} className="ml-2" />
+          <Link href="/new">
+            <Button size="lg" className="bg-white text-primary hover:bg-white/90 px-8">
+              Analyse starten <ArrowRight size={16} className="ml-2" />
             </Button>
-          )}
+          </Link>
         </div>
       </section>
 

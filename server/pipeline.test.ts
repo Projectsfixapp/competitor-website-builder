@@ -195,7 +195,7 @@ describe("analyzeCompetitors", () => {
     );
 
     const pages = [makePage({ url: "https://weak.example", title: "Weak" }), makePage({ url: "https://strong.example", title: "Strong" })];
-    const insights = await analyzeCompetitors(pages, "manus");
+    const insights = await analyzeCompetitors(pages, "claude");
 
     expect(insights.scores).toHaveLength(2);
     expect(insights.scores[0]!.url).toBe("https://strong.example");
@@ -220,7 +220,7 @@ describe("analyzeCompetitors", () => {
     );
 
     const pages = [makePage({ url: "https://a.example" }), makePage({ url: "https://b.example" })];
-    const insights = await analyzeCompetitors(pages, "manus");
+    const insights = await analyzeCompetitors(pages, "claude");
 
     const unjudged = insights.scores.find((s) => s.url === "https://b.example")!;
     expect(unjudged.breakdown.content).toBe(5);
@@ -244,7 +244,7 @@ describe("analyzeCompetitors", () => {
         })
       );
 
-    const insights = await analyzeCompetitors([makePage()], "manus");
+    const insights = await analyzeCompetitors([makePage()], "claude");
 
     expect(callLLMMock).toHaveBeenCalledTimes(2);
     expect(insights.scores).toHaveLength(1);
@@ -253,7 +253,7 @@ describe("analyzeCompetitors", () => {
   it("throws a clear error instead of silently returning an empty analysis when the LLM never returns valid JSON", async () => {
     callLLMMock.mockResolvedValue("nicht valides json{{{");
 
-    await expect(analyzeCompetitors([makePage()], "manus")).rejects.toThrow(/valides JSON/);
+    await expect(analyzeCompetitors([makePage()], "claude")).rejects.toThrow(/valides JSON/);
     expect(callLLMMock).toHaveBeenCalledTimes(2); // exhausted both attempts, didn't retry forever
   });
 });
@@ -384,7 +384,7 @@ describe("generateWebsite image sourcing", () => {
 
   it("uses real scraped images and never calls Gemini when usable images exist", async () => {
     const theme = { backgroundColor: "#FAFAF9", accentColors: ["#C8A96E"], logoUrl: null, images: ["https://example.com/real.jpg"] };
-    await generateWebsite(baseInsights, [makePage()], "manus", theme);
+    await generateWebsite(baseInsights, [makePage()], "claude", theme);
 
     expect(generateImageWithGeminiMock).not.toHaveBeenCalled();
     const userPrompt = callLLMMock.mock.calls[0]![0].messages[0].content as string;
@@ -395,7 +395,7 @@ describe("generateWebsite image sourcing", () => {
   it("falls back to Gemini-generated images when no real images were found", async () => {
     generateImageWithGeminiMock.mockResolvedValue({ dataUrl: "data:image/png;base64,AAAA" });
     const theme = { backgroundColor: "#FAFAF9", accentColors: ["#C8A96E"], logoUrl: null, images: [] };
-    await generateWebsite(baseInsights, [makePage()], "manus", theme);
+    await generateWebsite(baseInsights, [makePage()], "claude", theme);
 
     expect(generateImageWithGeminiMock).toHaveBeenCalledTimes(2); // hero + supporting image
     const systemPrompt = callLLMMock.mock.calls[0]![0].messages[0].content as string;
@@ -405,7 +405,7 @@ describe("generateWebsite image sourcing", () => {
   it("falls back to a photo-free, CSS-only instruction when Gemini also fails", async () => {
     generateImageWithGeminiMock.mockRejectedValue(new Error("GEMINI_API_KEY nicht gesetzt"));
     const theme = { backgroundColor: "#FAFAF9", accentColors: ["#C8A96E"], logoUrl: null, images: [] };
-    await generateWebsite(baseInsights, [makePage()], "manus", theme);
+    await generateWebsite(baseInsights, [makePage()], "claude", theme);
 
     const systemPrompt = callLLMMock.mock.calls[0]![0].messages[0].content as string;
     expect(systemPrompt).toContain("keine echten Fotos vor");
@@ -448,7 +448,7 @@ describe("reviseWebsiteViaChat", () => {
       `REPLY: Ich habe den Button rot gemacht.\n---HTML---\n<!DOCTYPE html><html><body><button style="color:red">Click</button></body></html>`
     );
 
-    const result = await reviseWebsiteViaChat(currentHtml, "Mach den Button rot", "manus");
+    const result = await reviseWebsiteViaChat(currentHtml, "Mach den Button rot", "claude");
 
     expect(result.reply).toBe("Ich habe den Button rot gemacht.");
     expect(result.htmlContent).toContain('color:red');
@@ -457,7 +457,7 @@ describe("reviseWebsiteViaChat", () => {
   it("falls back to a generic reply when the LLM omits the REPLY line/delimiter", async () => {
     callLLMMock.mockResolvedValue(`<!DOCTYPE html><html><body>Updated</body></html>`);
 
-    const result = await reviseWebsiteViaChat(currentHtml, "Mach irgendwas", "manus");
+    const result = await reviseWebsiteViaChat(currentHtml, "Mach irgendwas", "claude");
 
     expect(result.reply).toBe("Änderung übernommen.");
     expect(result.htmlContent).toContain("Updated");
@@ -466,7 +466,7 @@ describe("reviseWebsiteViaChat", () => {
   it("keeps the previous working HTML and reports failure when the LLM returns non-HTML garbage", async () => {
     callLLMMock.mockResolvedValue(`REPLY: Erledigt.\n---HTML---\nIch kann das nicht tun, sorry.`);
 
-    const result = await reviseWebsiteViaChat(currentHtml, "Etwas Unmögliches", "manus");
+    const result = await reviseWebsiteViaChat(currentHtml, "Etwas Unmögliches", "claude");
 
     expect(result.htmlContent).toBe(currentHtml); // unchanged, not corrupted
     expect(result.reply).toMatch(/nicht sauber angewendet/);
@@ -478,7 +478,7 @@ describe("reviseWebsiteViaChat", () => {
     );
     const attachedImage = { dataUrl: "data:image/png;base64,AAAA", mimeType: "image/png" };
 
-    const result = await reviseWebsiteViaChat(currentHtml, "Nutze das hochgeladene Bild im Hero", "manus", attachedImage);
+    const result = await reviseWebsiteViaChat(currentHtml, "Nutze das hochgeladene Bild im Hero", "claude", attachedImage);
 
     expect(result.htmlContent).toContain('src="data:image/png;base64,AAAA"');
     expect(result.htmlContent).not.toContain("__UPLOADED_IMAGE__");

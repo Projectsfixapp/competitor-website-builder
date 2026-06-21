@@ -76,15 +76,15 @@ nano .env
 | `MYSQL_ROOT_PASSWORD` | MySQL Root-Passwort | Selbst wählen (sicher!) |
 | `MYSQL_PASSWORD` | App-Datenbankpasswort | Selbst wählen |
 | `JWT_SECRET` | Session-Signing-Key | `openssl rand -hex 32` |
-| `VITE_APP_ID` | Manus OAuth App-ID | Manus Projekteinstellungen |
-| `BUILT_IN_FORGE_API_KEY` | Manus LLM API-Key | Manus Projekteinstellungen |
+| `OWNER_EMAIL` | E-Mail, die beim Registrieren automatisch Admin-Rechte bekommt | Selbst wählen |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_URL_BASE` | Cloudflare R2 (Logo-/Bilder-Uploads) | Cloudflare Dashboard → R2 |
 
 **`GEMINI_API_KEY` ist nicht mehr rein optional:** wird zusätzlich zur Text-Analyse auch für die KI-Bild-Fallback-Generierung genutzt (`server/geminiImages.ts`), unabhängig davon, welcher LLM-Provider für die Analyse gewählt wird. Ohne diesen Key generiert die App bei fehlenden echten Bildern einfach foto-freie, farbflächenbasierte Designs statt Fotos — kein Absturz, aber weniger visuelle Vielfalt.
 
 | Variable | Beschreibung |
 |---|---|
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/app/apikey) — Pflicht für Bild-Fallback, optional nur für Text falls Gemini nicht als Analyse-Provider gewählt wird |
-| `ANTHROPIC_API_KEY` | [Anthropic Console](https://console.anthropic.com/settings/keys) — nur falls Claude als Analyse-Provider gewählt wird |
+| `ANTHROPIC_API_KEY` | [Anthropic Console](https://console.anthropic.com/settings/keys) — Standard-Provider für Analyse & Generierung |
 
 ---
 
@@ -171,7 +171,6 @@ Port 3000 und 3306 **nicht** öffentlich freigeben – diese laufen nur intern.
 
 | Provider | Kosten pro Website-Generierung (ca.) |
 |---|---|
-| Manus Built-in | Aus Manus-Credits |
 | Google Gemini 2.5 Flash | ~0,01–0,05 € |
 | Anthropic Claude Sonnet | ~0,05–0,15 € |
 

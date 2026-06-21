@@ -1,13 +1,10 @@
 /**
  * AI image generation via Google's Gemini image-capable model. Used only as
  * a fallback for generateWebsite() when scraping found no usable real
- * photos (e.g. the customer didn't mark/provide their own site).
+ * photos (e.g. the customer didn't provide their own site).
  *
- * Deliberately NOT server/_core/imageGeneration.ts (Manus Forge): that
- * service is tied to Manus's own hosted runtime and its API/storage aren't
- * reachable once deployed standalone (Render) — confirmed not usable here.
- * Always requires GEMINI_API_KEY, independent of which provider (manus/
- * gemini/claude) is doing the text analysis/generation for the project.
+ * Always requires GEMINI_API_KEY, independent of which provider (gemini/
+ * claude) is doing the text analysis/generation for the project.
  */
 
 const GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image";
